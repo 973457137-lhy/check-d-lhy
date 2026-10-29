@@ -132,7 +132,10 @@ void main() {
 
     test('corrupted and unsupported payloads stay distinct', () async {
       final remote = _FakeRemoteStore();
-      final repository = DefaultCourseShareRepository(remote: remote);
+      final repository = DefaultCourseShareRepository(
+        remote: remote,
+        now: () => DateTime.utc(2026, 9, 14),
+      );
       remote.records['ABCD2345'] = CourseShareRemoteRecord(
         status: CourseShareRemoteStatus.found,
         expiresAt: DateTime(2026, 9, 20),
