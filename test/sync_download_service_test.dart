@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:check_d/core/database/app_database.dart';
 import 'package:check_d/core/notifications/notification_service.dart';
 import 'package:check_d/core/notifications/reminder_scheduler.dart';
@@ -8,7 +10,8 @@ import 'package:check_d/features/courses/data/course_repository.dart';
 import 'package:check_d/features/courses/data/semester_repository.dart';
 import 'package:check_d/features/schedule/data/day_schedule_repository.dart';
 import 'package:check_d/features/tasks/data/task_repository.dart';
-import 'package:drift/drift.dart' hide isNotNull;
+import 'package:check_d/features/tasks/domain/task_models.dart';
+import 'package:drift/drift.dart' hide isNotNull, isNull;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -17,15 +20,17 @@ void main() {
   late AppDatabase database;
   late _FakeRemoteReader remote;
   late SyncDownloadExecutor executor;
+  late String currentUserId;
 
   setUp(() {
     database = AppDatabase.forTesting(NativeDatabase.memory());
     remote = _FakeRemoteReader();
+    currentUserId = userId;
     executor = SyncDownloadExecutor(
       database: database,
       remote: remote,
       applyScope: SyncApplyScope(),
-      currentUserId: () => userId,
+      currentUserId: () => currentUserId,
     );
   });
 
@@ -54,6 +59,27 @@ void main() {
         hasLength(1),
       );
       expect(await database.select(database.localTasks).get(), hasLength(2));
+      final restoredOneTime = await (database.select(
+        database.oneTimeReminderRecords,
+      )..where((row) => row.taskId.equals('task-2'))).getSingle();
+      expect(restoredOneTime.availableFrom, '2030-01-01');
+      expect(restoredOneTime.plannedDate, '2030-01-02');
+      expect(restoredOneTime.dueDate, '2030-01-03');
+      expect(restoredOneTime.dueAt, isNull);
+      final restoredTodayTask =
+          (await TaskRepository(
+            database: database,
+            syncQueue: SyncQueueService(database),
+            userId: userId,
+          ).watchTasksForDate(DateTime(2030, 1, 4)).first).singleWhere(
+            (task) => task.id == 'task-2',
+          );
+      expect(
+        restoredTodayTask
+            .todayStatus(DateTime(2030, 1, 4), now: DateTime(2030, 1, 4))
+            .state,
+        OneTimeTodayState.overdue,
+      );
       expect(
         await database.select(database.timerSessionRecords).get(),
         hasLength(2),
@@ -179,6 +205,98 @@ void main() {
   });
 
   test(
+    'timed out table read applies nothing and a later retry is safe',
+    () async {
+      remote.tables['tags'] = [
+        _row('tag-timeout', {'name': '超时前不得写入', 'color': 1, 'archived': false}),
+      ];
+      remote.blockTable = 'tasks';
+      executor = SyncDownloadExecutor(
+        database: database,
+        remote: remote,
+        applyScope: SyncApplyScope(),
+        currentUserId: () => currentUserId,
+        tableReadTimeout: const Duration(milliseconds: 5),
+        restoreTimeout: const Duration(seconds: 1),
+      );
+
+      final failed = await executor.reconcile();
+
+      expect(failed.succeeded, isFalse);
+      expect(failed.failure?.category, SyncRestoreErrorCategory.timeout);
+      expect(failed.failure?.stage, SyncRestoreStage.reading);
+      expect(failed.failure?.table, 'tasks');
+      expect(await database.select(database.tagRecords).get(), isEmpty);
+
+      remote.releaseBlockedRead();
+      remote.blockTable = null;
+      await Future<void>.delayed(Duration.zero);
+      expect(await database.select(database.tagRecords).get(), isEmpty);
+
+      expect((await executor.reconcile()).succeeded, isTrue);
+      expect(await database.select(database.tagRecords).get(), hasLength(1));
+    },
+  );
+
+  test('overall snapshot deadline reports the current table safely', () async {
+    remote.readDelay = const Duration(milliseconds: 3);
+    executor = SyncDownloadExecutor(
+      database: database,
+      remote: remote,
+      applyScope: SyncApplyScope(),
+      currentUserId: () => currentUserId,
+      tableReadTimeout: const Duration(seconds: 1),
+      restoreTimeout: const Duration(milliseconds: 8),
+    );
+
+    final result = await executor.reconcile();
+
+    expect(result.succeeded, isFalse);
+    expect(result.failure?.category, SyncRestoreErrorCategory.timeout);
+    expect(result.failure?.stage, SyncRestoreStage.reading);
+    expect(result.failure?.table, isNotNull);
+    expect(await database.select(database.tagRecords).get(), isEmpty);
+  });
+
+  test('account change before apply prevents every local write', () async {
+    remote.tables['tags'] = [
+      _row('tag-account-change', {
+        'name': '旧账号数据',
+        'color': 1,
+        'archived': false,
+      }),
+    ];
+    remote.blockTable = 'tasks';
+    final run = executor.reconcile();
+    await Future<void>.delayed(Duration.zero);
+
+    currentUserId = 'user-2';
+    remote.releaseBlockedRead();
+    final result = await run;
+
+    expect(result.succeeded, isFalse);
+    expect(result.failure?.category, SyncRestoreErrorCategory.accountChanged);
+    expect(await database.select(database.tagRecords).get(), isEmpty);
+  });
+
+  test('restore progress contains only stage and table metadata', () async {
+    final progress = <SyncRestoreProgress>[];
+
+    final result = await executor.reconcile(onProgress: progress.add);
+
+    expect(result.succeeded, isTrue);
+    expect(progress.first.stage, SyncRestoreStage.reading);
+    expect(progress.first.table, 'tags');
+    expect(progress.first.tableIndex, 1);
+    expect(progress.first.tableTotal, 22);
+    expect(
+      progress.any((item) => item.stage == SyncRestoreStage.validating),
+      isTrue,
+    );
+    expect(progress.last.stage, SyncRestoreStage.applying);
+  });
+
+  test(
     'cross-user rows are ignored and invalid duplicate unfinished timers fail safely',
     () async {
       remote.tables['tags'] = [
@@ -202,6 +320,22 @@ void main() {
       expect(await database.select(database.localTasks).get(), isEmpty);
     },
   );
+
+  test('restore never overwrites an offline row with the same id', () async {
+    await _insertOwnedTask(database, id: 'shared-id', owner: 'offline-user');
+    remote.tables['tasks'] = [
+      _row('shared-id', {'name': '云端任务', 'type': 'long_term', 'color': 2}),
+    ];
+
+    final result = await executor.reconcile();
+
+    expect(result.error, isA<SyncRestoreSnapshotException>());
+    final local = await (database.select(
+      database.localTasks,
+    )..where((row) => row.id.equals('shared-id'))).getSingle();
+    expect(local.userId, 'offline-user');
+    expect(local.name, 'shared-id');
+  });
 
   test(
     'multiple timers for different tasks restore and future reminders use the existing scheduler',
@@ -247,6 +381,88 @@ void main() {
       expect(notifications.scheduled.single.when, DateTime(2030, 1, 1, 10));
     },
   );
+
+  for (final entry in const <String, String>{
+    'timed': 'timed',
+    'timer': 'timed',
+    'untimed': 'untimed',
+  }.entries) {
+    test('long-term ${entry.key} restores as ${entry.value}', () async {
+      remote.tables['tasks'] = [
+        _row('mode-task', {
+          'name': '模式测试',
+          'type': 'long_term',
+          'color': 1,
+          'status': 'active',
+        }),
+      ];
+      remote.tables['long_term_tasks'] = [
+        _row('mode-record', {
+          'task_id': 'mode-task',
+          'check_mode': entry.key,
+          'holiday_pause': false,
+        }),
+      ];
+
+      expect((await executor.reconcile()).succeeded, isTrue);
+      final restored = await (database.select(
+        database.longTermTaskRecords,
+      )..where((row) => row.taskId.equals('mode-task'))).getSingle();
+      expect(restored.checkMode, entry.value);
+    });
+  }
+
+  test('unknown long-term mode fails without silently changing it', () async {
+    await _insertOwnedTask(database, id: 'existing-local-task', owner: userId);
+    remote.tables['tasks'] = [
+      _row('unknown-mode-task', {
+        'name': '未知模式',
+        'type': 'long_term',
+        'color': 1,
+        'status': 'active',
+      }),
+    ];
+    remote.tables['long_term_tasks'] = [
+      _row('unknown-mode-record', {
+        'task_id': 'unknown-mode-task',
+        'check_mode': 'future-mode',
+        'holiday_pause': false,
+      }),
+    ];
+
+    final result = await executor.reconcile();
+    expect(result.succeeded, isFalse);
+    expect(result.error, isA<FormatException>());
+    expect(result.failure?.stage, SyncRestoreStage.applying);
+    expect(result.failure?.table, 'long_term_tasks');
+    expect(result.failure?.category, SyncRestoreErrorCategory.schema);
+    expect(result.failure?.safeCode, 'decode');
+    final tasks = await database.select(database.localTasks).get();
+    expect(tasks, hasLength(1));
+    expect(tasks.single.id, 'existing-local-task');
+    expect(tasks.single.name, 'existing-local-task');
+  });
+}
+
+Future<void> _insertOwnedTask(
+  AppDatabase database, {
+  required String id,
+  required String owner,
+}) {
+  final now = DateTime.utc(2030);
+  return database
+      .into(database.localTasks)
+      .insert(
+        LocalTasksCompanion.insert(
+          id: id,
+          userId: Value(owner),
+          name: id,
+          taskType: 'recurring',
+          colorValue: 1,
+          createdAt: now,
+          updatedAt: now,
+        ),
+      );
 }
 
 Future<LocalTask> taskFor(AppDatabase database, String id) => (database.select(
@@ -332,6 +548,10 @@ Map<String, List<Map<String, Object?>>> _fullSnapshot() => {
       'task_id': 'task-2',
       'scheduled_at': '2030-01-02T10:00:00Z',
       'has_scheduled_date': true,
+      'available_from': '2030-01-01',
+      'planned_date': '2030-01-02',
+      'due_date': '2030-01-03',
+      'due_at': null,
       'is_timed': false,
     }),
   ],
@@ -462,6 +682,14 @@ String _time(int hour) =>
 class _FakeRemoteReader implements SyncRemoteReader {
   final Map<String, List<Map<String, Object?>>> tables = {};
   String? failTable;
+  String? blockTable;
+  Duration readDelay = Duration.zero;
+  Completer<void>? _blockedRead;
+
+  void releaseBlockedRead() {
+    final blocked = _blockedRead;
+    if (blocked != null && !blocked.isCompleted) blocked.complete();
+  }
 
   @override
   Future<List<Map<String, Object?>>> readTable(
@@ -469,6 +697,12 @@ class _FakeRemoteReader implements SyncRemoteReader {
     required String userId,
   }) async {
     if (table == failTable) throw StateError('network unavailable');
+    if (readDelay > Duration.zero) await Future<void>.delayed(readDelay);
+    if (table == blockTable) {
+      _blockedRead ??= Completer<void>();
+      await _blockedRead!.future;
+      _blockedRead = null;
+    }
     return tables[table] ?? const [];
   }
 }

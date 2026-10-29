@@ -14,6 +14,49 @@ abstract interface class SyncRemoteReader {
   });
 }
 
+enum SyncRestoreStage { reading, validating, applying }
+
+enum SyncRestoreErrorCategory {
+  timeout,
+  network,
+  authentication,
+  schema,
+  localDatabase,
+  conflict,
+  accountChanged,
+  unknown,
+}
+
+class SyncRestoreProgress {
+  const SyncRestoreProgress({
+    required this.stage,
+    this.table,
+    this.tableIndex,
+    this.tableTotal,
+  });
+
+  final SyncRestoreStage stage;
+  final String? table;
+  final int? tableIndex;
+  final int? tableTotal;
+}
+
+class SyncRestoreFailure {
+  const SyncRestoreFailure({
+    required this.stage,
+    required this.category,
+    this.table,
+    this.safeCode,
+  });
+
+  final SyncRestoreStage stage;
+  final SyncRestoreErrorCategory category;
+  final String? table;
+  final String? safeCode;
+}
+
+typedef SyncRestoreProgressCallback = void Function(SyncRestoreProgress value);
+
 class SupabaseSyncRemoteReader implements SyncRemoteReader {
   const SupabaseSyncRemoteReader(this._client);
 
@@ -35,12 +78,14 @@ class SyncDownloadResult {
     required this.skipped,
     this.unauthenticated = false,
     this.error,
+    this.failure,
   });
 
   final int applied;
   final int skipped;
   final bool unauthenticated;
   final Object? error;
+  final SyncRestoreFailure? failure;
 
   bool get succeeded => !unauthenticated && error == null;
 }
@@ -63,6 +108,8 @@ class SyncDownloadExecutor {
     required SyncRemoteReader remote,
     required SyncApplyScope applyScope,
     required String? Function() currentUserId,
+    this.tableReadTimeout = const Duration(seconds: 15),
+    this.restoreTimeout = const Duration(seconds: 60),
   }) : _database = database,
        _remote = remote,
        _applyScope = applyScope,
@@ -97,9 +144,13 @@ class SyncDownloadExecutor {
   final SyncRemoteReader _remote;
   final SyncApplyScope _applyScope;
   final String? Function() _currentUserId;
+  final Duration tableReadTimeout;
+  final Duration restoreTimeout;
   bool _isReconciling = false;
 
-  Future<SyncDownloadResult> reconcile() async {
+  Future<SyncDownloadResult> reconcile({
+    SyncRestoreProgressCallback? onProgress,
+  }) async {
     if (_isReconciling) {
       return const SyncDownloadResult(applied: 0, skipped: 0);
     }
@@ -113,21 +164,107 @@ class SyncDownloadExecutor {
     }
 
     _isReconciling = true;
+    var stage = SyncRestoreStage.reading;
+    String? currentTable;
     try {
       // Fetch first. A failed network request must not leave a partially
       // restored parent/child graph in Drift.
       final snapshot = <String, List<Map<String, Object?>>>{};
-      for (final table in _tables) {
-        snapshot[table] = await _remote.readTable(table, userId: userId);
+      final readDeadline = DateTime.now().add(restoreTimeout);
+      for (var index = 0; index < _tables.length; index++) {
+        final table = _tables[index];
+        currentTable = table;
+        _report(
+          onProgress,
+          SyncRestoreProgress(
+            stage: SyncRestoreStage.reading,
+            table: table,
+            tableIndex: index + 1,
+            tableTotal: _tables.length,
+          ),
+        );
+        final remaining = readDeadline.difference(DateTime.now());
+        if (remaining <= Duration.zero) {
+          throw TimeoutException('restore snapshot read deadline exceeded');
+        }
+        final timeout = remaining < tableReadTimeout
+            ? remaining
+            : tableReadTimeout;
+        snapshot[table] = await _remote
+            .readTable(table, userId: userId)
+            .timeout(timeout);
       }
+      _ensureCurrentUser(userId);
+      stage = SyncRestoreStage.validating;
+      currentTable = null;
+      _report(
+        onProgress,
+        const SyncRestoreProgress(stage: SyncRestoreStage.validating),
+      );
+      final validationTime = readDeadline.difference(DateTime.now());
+      if (validationTime <= Duration.zero) {
+        throw TimeoutException('restore pre-commit deadline exceeded');
+      }
+      // Validation only reads local rows, so timing out this wait cannot leave
+      // a partially applied snapshot. The Drift write transaction below is
+      // deliberately never wrapped in Future.timeout because it is not
+      // cancellable.
+      await _validateForeignOwnerConflicts(
+        snapshot,
+        userId,
+      ).timeout(validationTime);
       _validateTimerSnapshot(snapshot['timer_sessions'] ?? const [], userId);
+      if (DateTime.now().isAfter(readDeadline)) {
+        throw TimeoutException('restore pre-commit deadline exceeded');
+      }
+      _ensureCurrentUser(userId);
+      stage = SyncRestoreStage.applying;
+      _report(
+        onProgress,
+        const SyncRestoreProgress(stage: SyncRestoreStage.applying),
+      );
       return await _applyScope.run(
         () => _database.transaction(() => _applySnapshot(snapshot, userId)),
       );
     } on Object catch (error) {
-      return SyncDownloadResult(applied: 0, skipped: 0, error: error);
+      final publicError = error is _SyncRestoreApplyException
+          ? error.cause
+          : error;
+      return SyncDownloadResult(
+        applied: 0,
+        skipped: 0,
+        error: publicError,
+        failure: _safeFailure(error, stage: stage, table: currentTable),
+      );
     } finally {
       _isReconciling = false;
+    }
+  }
+
+  Future<void> _validateForeignOwnerConflicts(
+    Map<String, List<Map<String, Object?>>> snapshot,
+    String userId,
+  ) async {
+    for (final spec in _restoreIdentityCoverage) {
+      for (final remoteRow in snapshot[spec.remoteTable] ?? const []) {
+        if (_stringOrNull(remoteRow, 'user_id') != userId) continue;
+        final remoteId = remoteRow[spec.remoteIdColumn]?.toString();
+        if (remoteId == null || remoteId.isEmpty) continue;
+        final local = await _database
+            .customSelect(
+              'SELECT user_id FROM ${spec.localTable} '
+              'WHERE ${spec.localIdColumn} = ? LIMIT 1',
+              variables: [Variable<String>(remoteId)],
+            )
+            .getSingleOrNull();
+        final localOwner = local?.read<String>('user_id');
+        if (localOwner != null && localOwner != userId) {
+          throw SyncRestoreSnapshotException(
+            'Remote ${spec.remoteTable} row conflicts with local data owned '
+            'by another account.',
+          );
+        }
+      }
     }
   }
 
@@ -160,15 +297,21 @@ class SyncDownloadExecutor {
       String table,
       Future<bool> Function(Map<String, Object?> row) apply,
     ) async {
+      _ensureCurrentUser(userId);
       for (final row in snapshot[table] ?? const []) {
+        _ensureCurrentUser(userId);
         if (_stringOrNull(row, 'user_id') != userId) {
           skipped++;
           continue;
         }
-        if (await apply(row)) {
-          applied++;
-        } else {
-          skipped++;
+        try {
+          if (await apply(row)) {
+            applied++;
+          } else {
+            skipped++;
+          }
+        } on Object catch (error) {
+          throw _SyncRestoreApplyException(table, error);
         }
       }
     }
@@ -217,6 +360,102 @@ class SyncDownloadExecutor {
     await applyRows('user_preferences', (row) => _applyPreference(row, userId));
 
     return SyncDownloadResult(applied: applied, skipped: skipped);
+  }
+
+  void _ensureCurrentUser(String expectedUserId) {
+    if (_currentUserId() != expectedUserId) {
+      throw const _SyncRestoreAccountChanged();
+    }
+  }
+
+  void _report(
+    SyncRestoreProgressCallback? callback,
+    SyncRestoreProgress progress,
+  ) {
+    if (callback == null) return;
+    try {
+      callback(progress);
+    } on Object {
+      // Diagnostics must never alter restore behavior.
+    }
+  }
+
+  SyncRestoreFailure _safeFailure(
+    Object error, {
+    required SyncRestoreStage stage,
+    String? table,
+  }) {
+    if (error is _SyncRestoreApplyException) {
+      return _safeFailure(error.cause, stage: stage, table: error.table);
+    }
+    if (error is TimeoutException) {
+      return SyncRestoreFailure(
+        stage: stage,
+        table: table,
+        category: SyncRestoreErrorCategory.timeout,
+        safeCode: 'timeout',
+      );
+    }
+    if (error is _SyncRestoreAccountChanged) {
+      return SyncRestoreFailure(
+        stage: stage,
+        table: table,
+        category: SyncRestoreErrorCategory.accountChanged,
+        safeCode: 'account_changed',
+      );
+    }
+    if (error is SyncRestoreSnapshotException) {
+      return SyncRestoreFailure(
+        stage: stage,
+        table: table,
+        category: SyncRestoreErrorCategory.conflict,
+        safeCode: 'snapshot_conflict',
+      );
+    }
+    if (error is PostgrestException) {
+      final code = error.code ?? '';
+      final category = code == '401' || code == '403'
+          ? SyncRestoreErrorCategory.authentication
+          : code.startsWith('08')
+          ? SyncRestoreErrorCategory.network
+          : code.startsWith('22') ||
+                code.startsWith('23') ||
+                code.startsWith('42')
+          ? SyncRestoreErrorCategory.schema
+          : SyncRestoreErrorCategory.unknown;
+      return SyncRestoreFailure(
+        stage: stage,
+        table: table,
+        category: category,
+        safeCode: code.isEmpty ? null : code,
+      );
+    }
+    if (error is AuthException) {
+      return SyncRestoreFailure(
+        stage: stage,
+        table: table,
+        category: SyncRestoreErrorCategory.authentication,
+        safeCode: 'auth',
+      );
+    }
+    if (error is FormatException) {
+      return SyncRestoreFailure(
+        stage: stage,
+        table: table,
+        category: SyncRestoreErrorCategory.schema,
+        safeCode: 'decode',
+      );
+    }
+    final type = error.runtimeType.toString().toLowerCase();
+    final category =
+        type.contains('socket') ||
+            type.contains('network') ||
+            type.contains('clientexception')
+        ? SyncRestoreErrorCategory.network
+        : type.contains('sqlite') || type.contains('drift')
+        ? SyncRestoreErrorCategory.localDatabase
+        : SyncRestoreErrorCategory.unknown;
+    return SyncRestoreFailure(stage: stage, table: table, category: category);
   }
 
   bool _isRemoteNewer({
@@ -420,9 +659,13 @@ class SyncDownloadExecutor {
           LongTermTaskRecordsCompanion.insert(
             taskId: taskId,
             userId: userId,
-            checkMode: _string(row, 'check_mode') == 'timer'
-                ? 'timed'
-                : 'untimed',
+            checkMode: switch (_string(row, 'check_mode')) {
+              'timed' || 'timer' => 'timed',
+              'untimed' => 'untimed',
+              final value => throw FormatException(
+                'Unsupported long-term task check mode: $value.',
+              ),
+            },
             targetDurationSeconds: Value(
               _intOrNull(row['target_duration_seconds']),
             ),
@@ -499,6 +742,10 @@ class SyncDownloadExecutor {
             userId: userId,
             scheduledAt: _dateTime(row, 'scheduled_at'),
             hasScheduledDate: Value(_boolOr(row, 'has_scheduled_date', true)),
+            availableFrom: Value(_stringOrNull(row, 'available_from')),
+            plannedDate: Value(_stringOrNull(row, 'planned_date')),
+            dueDate: Value(_stringOrNull(row, 'due_date')),
+            dueAt: Value(_dateTimeOrNull(row, 'due_at')),
             remindBeforeMinutes: Value(
               _intOrNull(row['remind_before_minutes']),
             ),
@@ -1110,6 +1357,100 @@ class SyncDownloadExecutor {
   }
 }
 
+class _RestoreIdentitySpec {
+  const _RestoreIdentitySpec(
+    this.remoteTable,
+    this.remoteIdColumn,
+    this.localTable,
+    this.localIdColumn,
+  );
+
+  final String remoteTable;
+  final String remoteIdColumn;
+  final String localTable;
+  final String localIdColumn;
+}
+
+const _restoreIdentityCoverage = <_RestoreIdentitySpec>[
+  _RestoreIdentitySpec('tags', 'id', 'tag_records', 'id'),
+  _RestoreIdentitySpec('tag_revisions', 'id', 'tag_revision_records', 'id'),
+  _RestoreIdentitySpec(
+    'schedule_templates',
+    'id',
+    'schedule_template_records',
+    'id',
+  ),
+  _RestoreIdentitySpec(
+    'schedule_template_segments',
+    'id',
+    'schedule_template_segment_records',
+    'id',
+  ),
+  _RestoreIdentitySpec('semesters', 'id', 'semester_records', 'id'),
+  _RestoreIdentitySpec('courses', 'id', 'course_records', 'id'),
+  _RestoreIdentitySpec(
+    'course_schedule_rules',
+    'id',
+    'course_schedule_rule_records',
+    'id',
+  ),
+  _RestoreIdentitySpec(
+    'daily_item_overrides',
+    'id',
+    'daily_item_override_records',
+    'id',
+  ),
+  _RestoreIdentitySpec('tasks', 'id', 'local_tasks', 'id'),
+  _RestoreIdentitySpec(
+    'long_term_tasks',
+    'task_id',
+    'long_term_task_records',
+    'task_id',
+  ),
+  _RestoreIdentitySpec(
+    'task_schedules',
+    'task_id',
+    'task_schedule_records',
+    'task_id',
+  ),
+  _RestoreIdentitySpec(
+    'one_time_reminders',
+    'task_id',
+    'one_time_reminder_records',
+    'task_id',
+  ),
+  _RestoreIdentitySpec(
+    'task_completions',
+    'id',
+    'task_completion_records',
+    'id',
+  ),
+  _RestoreIdentitySpec('timer_sessions', 'id', 'timer_session_records', 'id'),
+  _RestoreIdentitySpec('ad_hoc_timers', 'id', 'ad_hoc_timer_records', 'id'),
+  _RestoreIdentitySpec(
+    'ad_hoc_timer_intervals',
+    'id',
+    'ad_hoc_timer_interval_records',
+    'id',
+  ),
+  _RestoreIdentitySpec('reminder_rules', 'id', 'reminder_rule_records', 'id'),
+  _RestoreIdentitySpec('alarm_rules', 'id', 'alarm_rule_records', 'id'),
+  _RestoreIdentitySpec('plans', 'id', 'plan_records', 'id'),
+  _RestoreIdentitySpec('plan_tasks', 'plan_id', 'plan_task_records', 'plan_id'),
+  _RestoreIdentitySpec('reviews', 'id', 'review_records', 'id'),
+];
+
+class _SyncRestoreAccountChanged implements Exception {
+  const _SyncRestoreAccountChanged();
+}
+
+class _SyncRestoreApplyException implements Exception {
+  const _SyncRestoreApplyException(this.table, this.cause);
+
+  final String table;
+  final Object cause;
+}
+
 class SyncDownloadCoordinator {
   SyncDownloadCoordinator(this._executor);
 
@@ -1118,28 +1459,40 @@ class SyncDownloadCoordinator {
   DateTime? _lastReconcileAt;
   Future<SyncDownloadResult>? _inFlight;
 
-  Future<SyncDownloadResult> onAuthenticated(String userId) {
+  Future<SyncDownloadResult> onAuthenticated(
+    String userId, {
+    SyncRestoreProgressCallback? onProgress,
+  }) {
     if (_lastUserId != userId) {
       _lastUserId = userId;
       _lastReconcileAt = null;
     }
-    return reconcileIfDue(force: true);
+    return reconcileIfDue(force: true, onProgress: onProgress);
   }
 
-  Future<SyncDownloadResult> onAppResumed() => reconcileIfDue();
+  Future<SyncDownloadResult> onAppResumed({
+    SyncRestoreProgressCallback? onProgress,
+  }) => reconcileIfDue(onProgress: onProgress);
 
-  Future<SyncDownloadResult> reconcileIfDue({bool force = false}) {
+  Future<SyncDownloadResult> reconcileIfDue({
+    bool force = false,
+    SyncRestoreProgressCallback? onProgress,
+  }) {
     final now = DateTime.now().toUtc();
     if (!force &&
         _lastReconcileAt != null &&
         now.difference(_lastReconcileAt!) < const Duration(minutes: 5)) {
       return Future.value(const SyncDownloadResult(applied: 0, skipped: 0));
     }
-    return _inFlight ??= _reconcile().whenComplete(() => _inFlight = null);
+    return _inFlight ??= _reconcile(
+      onProgress: onProgress,
+    ).whenComplete(() => _inFlight = null);
   }
 
-  Future<SyncDownloadResult> _reconcile() async {
-    final result = await _executor.reconcile();
+  Future<SyncDownloadResult> _reconcile({
+    SyncRestoreProgressCallback? onProgress,
+  }) async {
+    final result = await _executor.reconcile(onProgress: onProgress);
     if (result.succeeded) _lastReconcileAt = DateTime.now().toUtc();
     return result;
   }

@@ -83,12 +83,14 @@ class SyncFlushResult {
     required this.failed,
     required this.skipped,
     this.unauthenticated = false,
+    this.busy = false,
   });
 
   final int uploaded;
   final int failed;
   final int skipped;
   final bool unauthenticated;
+  final bool busy;
 }
 
 /// Upload-only durable outbox processor. Drift remains authoritative until a
@@ -112,7 +114,12 @@ class SyncUploadExecutor {
 
   Future<SyncFlushResult> flush({bool force = false, int limit = 100}) async {
     if (_isFlushing) {
-      return const SyncFlushResult(uploaded: 0, failed: 0, skipped: 0);
+      return const SyncFlushResult(
+        uploaded: 0,
+        failed: 0,
+        skipped: 0,
+        busy: true,
+      );
     }
     final userId = _currentUserId();
     if (userId == null || userId.isEmpty) {
@@ -141,29 +148,9 @@ class SyncUploadExecutor {
 
       for (final operation in ready) {
         try {
-          final writes = await _writesFor(operation, userId);
+          final writes = await _prepareWrites(operation, userId);
           for (final write in writes) {
-            if (write.clearOtherActiveFlag != null) {
-              await _remote.clearOtherActiveFlag(
-                write.table,
-                userId: userId,
-                id: write.values['id']! as String,
-                flagColumn: write.clearOtherActiveFlag!,
-              );
-            }
-            if (write.planTaskRows != null) {
-              await _remote.replacePlanTasks(
-                userId: userId,
-                planId: write.values['plan_id']! as String,
-                rows: write.planTaskRows!,
-              );
-            } else {
-              await _remote.upsert(
-                write.table,
-                write.values,
-                onConflict: write.onConflict,
-              );
-            }
+            await _executeWrite(write, userId);
           }
           await _queue.markCompleted(operation.id);
           uploaded++;
@@ -180,6 +167,104 @@ class SyncUploadExecutor {
     } finally {
       _isFlushing = false;
     }
+  }
+
+  Future<List<_CloudWrite>> _prepareWrites(
+    SyncOperation operation,
+    String userId,
+  ) async {
+    try {
+      return await _writesFor(operation, userId);
+    } on Object catch (error) {
+      throw _safeFailure(error, stage: 'prepare', table: operation.entityType);
+    }
+  }
+
+  Future<void> _executeWrite(_CloudWrite write, String userId) async {
+    if (write.clearOtherActiveFlag != null) {
+      try {
+        await _remote.clearOtherActiveFlag(
+          write.table,
+          userId: userId,
+          id: write.values['id']! as String,
+          flagColumn: write.clearOtherActiveFlag!,
+        );
+      } on Object catch (error) {
+        throw _safeFailure(
+          error,
+          stage: 'clear_active_flag',
+          table: write.table,
+        );
+      }
+    }
+    if (write.planTaskRows != null) {
+      try {
+        await _remote.replacePlanTasks(
+          userId: userId,
+          planId: write.values['plan_id']! as String,
+          rows: write.planTaskRows!,
+        );
+      } on Object catch (error) {
+        throw _safeFailure(
+          error,
+          stage: 'replace_plan_tasks',
+          table: write.table,
+        );
+      }
+      return;
+    }
+    try {
+      await _remote.upsert(
+        write.table,
+        write.values,
+        onConflict: write.onConflict,
+      );
+    } on Object catch (error) {
+      throw _safeFailure(error, stage: 'upsert', table: write.table);
+    }
+  }
+
+  SyncFailureDetails _safeFailure(
+    Object error, {
+    required String stage,
+    required String table,
+  }) {
+    if (error is SyncFailureDetails) return error;
+    if (error is PostgrestException) {
+      return SyncFailureDetails(
+        stage: stage,
+        table: table,
+        kind: 'postgrest',
+        code: _safeRemoteCode(error.code),
+      );
+    }
+    final normalized = '${error.runtimeType} $error'.toLowerCase();
+    final kind = error is JsonUnsupportedObjectError
+        ? 'serialization'
+        : error is TimeoutException ||
+              normalized.contains('socketexception') ||
+              normalized.contains('clientexception') ||
+              normalized.contains('connection reset') ||
+              normalized.contains('timed out') ||
+              normalized.contains('timeout') ||
+              normalized.contains('handshakeexception')
+        ? 'network'
+        : error is StateError ||
+              error is FormatException ||
+              error is UnsupportedError
+        ? 'local_state'
+        : normalized.contains('auth') || normalized.contains('unauthorized')
+        ? 'auth'
+        : 'unknown';
+    return SyncFailureDetails(stage: stage, table: table, kind: kind);
+  }
+
+  String? _safeRemoteCode(String? value) {
+    final code = value?.toUpperCase();
+    return code != null &&
+            RegExp(r'^(?:[A-Z0-9]{5}|PGRST[0-9]{3})$').hasMatch(code)
+        ? code
+        : null;
   }
 
   bool _isReadyForRetry(SyncOperation operation) {
@@ -546,7 +631,8 @@ class SyncUploadExecutor {
               'id': schedule.id,
               'task_id': schedule.taskId,
               'schedule_type': schedule.scheduleType,
-              'weekdays': WeekdayMask.toDays(schedule.weekdaysMask),
+              'weekdays': WeekdayMask.toDays(schedule.weekdaysMask).toList()
+                ..sort(),
               'weekdays_mask': schedule.weekdaysMask,
               'starts_on': schedule.startsOn,
               'ends_on': schedule.endsOn,
@@ -571,6 +657,10 @@ class SyncUploadExecutor {
               'task_id': task.id,
               'scheduled_at': _iso(oneTime.scheduledAt),
               'has_scheduled_date': oneTime.hasScheduledDate,
+              'available_from': oneTime.availableFrom,
+              'planned_date': oneTime.plannedDate,
+              'due_date': oneTime.dueDate,
+              'due_at': _isoOrNull(oneTime.dueAt),
               'remind_before_minutes': oneTime.remindBeforeMinutes,
               'is_timed': oneTime.isTimed,
               'completed_at': _isoOrNull(oneTime.completedAt),
@@ -613,6 +703,10 @@ class SyncUploadExecutor {
           'task_id': row.taskId,
           'scheduled_at': _iso(row.scheduledAt),
           'has_scheduled_date': row.hasScheduledDate,
+          'available_from': row.availableFrom,
+          'planned_date': row.plannedDate,
+          'due_date': row.dueDate,
+          'due_at': _isoOrNull(row.dueAt),
           'remind_before_minutes': row.remindBeforeMinutes,
           'is_timed': row.isTimed,
           'completed_at': _isoOrNull(row.completedAt),
@@ -1035,14 +1129,17 @@ class SyncUploadCoordinator {
   StreamSubscription<List<SyncOperation>>? _subscription;
   Timer? _retryTimer;
   bool _active = false;
+  String? _activeUserId;
 
   void setActive(bool active, String? userId) {
     if (!active || userId == null || userId.isEmpty) {
       _stop();
       return;
     }
-    if (_active) return;
+    if (_active && _activeUserId == userId) return;
+    if (_active) _stop();
     _active = true;
+    _activeUserId = userId;
     _subscription = _queue.watchRetryableForUser(userId).listen((_) => flush());
     _retryTimer = Timer.periodic(const Duration(seconds: 30), (_) => flush());
     unawaited(flush(force: true));
@@ -1057,6 +1154,7 @@ class SyncUploadCoordinator {
 
   void _stop() {
     _active = false;
+    _activeUserId = null;
     _subscription?.cancel();
     _subscription = null;
     _retryTimer?.cancel();

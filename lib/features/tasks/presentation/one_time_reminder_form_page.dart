@@ -30,6 +30,9 @@ class _OneTimeReminderFormPageState
   late final TextEditingController _nameController;
   late final TextEditingController _notesController;
   DateTime? _scheduledAt;
+  DateTime? _availableFrom;
+  DateTime? _plannedDate;
+  TaskDeadline? _deadline;
   late int _colorValue;
   late String _iconName;
   String? _tagId;
@@ -48,6 +51,11 @@ class _OneTimeReminderFormPageState
     _nameController = TextEditingController(text: _initial?.name ?? '');
     _notesController = TextEditingController(text: _initial?.notes ?? '');
     _scheduledAt = _initial?.scheduledAt;
+    _availableFrom = _initial?.availableFrom;
+    _plannedDate =
+        _initial?.plannedDate ??
+        (_scheduledAt == null ? null : dateOnly(_scheduledAt!));
+    _deadline = _initial?.deadline;
     _colorValue = _initial?.colorValue ?? taskColorValues[2];
     _iconName = _initial?.iconName ?? TaskIconKey.event;
     _remindBeforeMinutes = _initial?.remindBeforeMinutes;
@@ -196,62 +204,117 @@ class _OneTimeReminderFormPageState
                         children: [
                           SwitchListTile.adaptive(
                             contentPadding: EdgeInsets.zero,
-                            title: const Text('设置日期与时间'),
-                            subtitle: const Text('可选；设置后可进入今日安排和倒计时'),
-                            value: _scheduledAt != null,
+                            title: const Text('可开始日期'),
+                            subtitle: const Text('到这一天后，事项才会进入待完成'),
+                            value: _availableFrom != null,
                             onChanged: (enabled) => setState(() {
-                              _scheduledAt = enabled
-                                  ? DateTime.now().add(const Duration(hours: 1))
+                              _availableFrom = enabled
+                                  ? dateOnly(DateTime.now())
                                   : null;
                             }),
                           ),
-                          if (_scheduledAt != null) ...[
-                            const SizedBox(height: 10),
-                            LayoutBuilder(
-                              builder: (context, constraints) {
-                                final dateButton = OutlinedButton.icon(
-                                  onPressed: _pickDate,
-                                  icon: const Icon(
-                                    Icons.calendar_today_rounded,
-                                  ),
-                                  label: Text(
-                                    DateFormat(
-                                      'yyyy年M月d日',
-                                    ).format(_scheduledAt!),
-                                  ),
-                                );
-                                final timeButton = OutlinedButton.icon(
-                                  onPressed: _pickTime,
-                                  icon: const Icon(Icons.schedule_rounded),
-                                  label: Text(
-                                    DateFormat('HH:mm').format(_scheduledAt!),
-                                  ),
-                                );
-                                if (constraints.maxWidth < 420) {
-                                  return Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.stretch,
-                                    children: [
-                                      dateButton,
-                                      const SizedBox(height: 10),
-                                      timeButton,
-                                    ],
-                                  );
-                                }
-                                return Row(
-                                  children: [
-                                    Expanded(child: dateButton),
-                                    const SizedBox(width: 10),
-                                    Expanded(child: timeButton),
-                                  ],
-                                );
-                              },
+                          if (_availableFrom != null)
+                            _DateChoiceButton(
+                              label: '选择可开始日期',
+                              value: _availableFrom!,
+                              onPressed: _pickAvailableDate,
                             ),
+                          const Divider(height: 28),
+                          SwitchListTile.adaptive(
+                            contentPadding: EdgeInsets.zero,
+                            title: const Text('安排执行日期'),
+                            subtitle: const Text('只表示计划什么时候做，不是截止时间'),
+                            value: _plannedDate != null,
+                            onChanged: (enabled) => setState(() {
+                              if (enabled) {
+                                _plannedDate = dateOnly(DateTime.now());
+                              } else {
+                                _plannedDate = null;
+                                _scheduledAt = null;
+                              }
+                            }),
+                          ),
+                          if (_plannedDate != null) ...[
+                            _DateChoiceButton(
+                              label: '选择计划日期',
+                              value: _plannedDate!,
+                              onPressed: _pickPlannedDate,
+                            ),
+                            SwitchListTile.adaptive(
+                              contentPadding: EdgeInsets.zero,
+                              title: const Text('设置具体时间'),
+                              subtitle: const Text('使用 24 小时制安排到时间轴'),
+                              value: _scheduledAt != null,
+                              onChanged: (enabled) => setState(() {
+                                _scheduledAt = enabled
+                                    ? DateTime(
+                                        _plannedDate!.year,
+                                        _plannedDate!.month,
+                                        _plannedDate!.day,
+                                        9,
+                                      )
+                                    : null;
+                              }),
+                            ),
+                            if (_scheduledAt != null)
+                              OutlinedButton.icon(
+                                onPressed: _pickTime,
+                                icon: const Icon(Icons.schedule_rounded),
+                                label: Text(
+                                  '选择具体时间 · ${DateFormat('HH:mm').format(_scheduledAt!)}',
+                                ),
+                              ),
                           ],
-                          const SizedBox(height: 14),
+                          const Divider(height: 28),
+                          SwitchListTile.adaptive(
+                            contentPadding: EdgeInsets.zero,
+                            title: const Text('截止时间'),
+                            subtitle: const Text('最晚需要完成的日期，可不设置'),
+                            value: _deadline != null,
+                            onChanged: (enabled) => setState(() {
+                              _deadline = enabled
+                                  ? TaskDeadline.dateOnly(DateTime.now())
+                                  : null;
+                            }),
+                          ),
+                          if (_deadline != null) ...[
+                            _DateChoiceButton(
+                              label: '选择截止日期',
+                              value: _deadline!.localDate,
+                              onPressed: _pickDeadlineDate,
+                            ),
+                            CheckboxListTile(
+                              contentPadding: EdgeInsets.zero,
+                              title: const Text('指定截止时间'),
+                              subtitle: const Text('关闭时，截止日期当天全天有效'),
+                              value: _deadline!.hasTime,
+                              onChanged: (enabled) => setState(() {
+                                final date = _deadline!.localDate;
+                                _deadline = enabled == true
+                                    ? TaskDeadline.exact(
+                                        DateTime(
+                                          date.year,
+                                          date.month,
+                                          date.day,
+                                          18,
+                                        ),
+                                      )
+                                    : TaskDeadline.dateOnly(date);
+                              }),
+                            ),
+                            if (_deadline!.hasTime)
+                              OutlinedButton.icon(
+                                onPressed: _pickDeadlineTime,
+                                icon: const Icon(Icons.timer_outlined),
+                                label: Text(
+                                  '选择截止时间 · ${DateFormat('HH:mm').format(_deadline!.at!)}',
+                                ),
+                              ),
+                          ],
+                          const Divider(height: 28),
                           if (_scheduledAt == null)
                             const Text(
-                              '设置具体日期与时间后可开启提前提醒和到点提醒。',
+                              '只有设置具体执行时间后，才能开启提前提醒和到点提醒。',
                               style: TextStyle(color: AppColors.muted),
                             )
                           else ...[
@@ -345,21 +408,69 @@ class _OneTimeReminderFormPageState
     );
   }
 
-  Future<void> _pickDate() async {
-    final date = await showDatePicker(
+  Future<DateTime?> _pickDateValue(DateTime initialDate) {
+    return showDatePicker(
       context: context,
-      initialDate: _scheduledAt ?? DateTime.now(),
+      initialDate: initialDate,
       firstDate: DateTime(2020),
       lastDate: DateTime(2100),
     );
+  }
+
+  Future<void> _pickAvailableDate() async {
+    final date = await _pickDateValue(_availableFrom ?? DateTime.now());
+    if (date == null) return;
+    setState(() => _availableFrom = dateOnly(date));
+  }
+
+  Future<void> _pickPlannedDate() async {
+    final date = await _pickDateValue(_plannedDate ?? DateTime.now());
     if (date == null) return;
     setState(() {
-      _scheduledAt = DateTime(
-        date.year,
-        date.month,
-        date.day,
-        _scheduledAt?.hour ?? 9,
-        _scheduledAt?.minute ?? 0,
+      _plannedDate = dateOnly(date);
+      if (_scheduledAt != null) {
+        _scheduledAt = DateTime(
+          date.year,
+          date.month,
+          date.day,
+          _scheduledAt!.hour,
+          _scheduledAt!.minute,
+        );
+      }
+    });
+  }
+
+  Future<void> _pickDeadlineDate() async {
+    final current = _deadline!;
+    final date = await _pickDateValue(current.localDate);
+    if (date == null) return;
+    setState(() {
+      _deadline = current.isDateOnly
+          ? TaskDeadline.dateOnly(date)
+          : TaskDeadline.exact(
+              DateTime(
+                date.year,
+                date.month,
+                date.day,
+                current.at!.hour,
+                current.at!.minute,
+              ),
+            );
+    });
+  }
+
+  Future<void> _pickDeadlineTime() async {
+    final current = _deadline!;
+    final time = await showAppTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(current.at!),
+      helpText: '选择截止时间',
+    );
+    if (time == null) return;
+    final date = current.localDate;
+    setState(() {
+      _deadline = TaskDeadline.exact(
+        DateTime(date.year, date.month, date.day, time.hour, time.minute),
       );
     });
   }
@@ -399,6 +510,9 @@ class _OneTimeReminderFormPageState
                   ? _tagId
                   : null,
               scheduledAt: _scheduledAt,
+              availableFrom: _availableFrom,
+              plannedDate: _plannedDate,
+              deadline: _deadline,
               executionMode: _executionMode,
               remindBeforeMinutes: _remindBeforeMinutes,
               notes: _notesController.text,
@@ -417,15 +531,44 @@ class _OneTimeReminderFormPageState
             atTimeEnabled: _scheduledAt != null && _atTimeReminderEnabled,
           );
       if (mounted) Navigator.of(context).pop();
-    } on Object {
+    } on Object catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text('保存失败，请检查输入后重试')));
+        ).showSnackBar(SnackBar(content: Text(_saveErrorMessage(error))));
         setState(() => _isSaving = false);
       }
     }
   }
+
+  String _saveErrorMessage(Object error) {
+    if (error is ArgumentError) {
+      final message = error.message;
+      if (message != null && message.toString().trim().isNotEmpty) {
+        return message.toString();
+      }
+    }
+    return '保存失败，请检查输入后重试';
+  }
+}
+
+class _DateChoiceButton extends StatelessWidget {
+  const _DateChoiceButton({
+    required this.label,
+    required this.value,
+    required this.onPressed,
+  });
+
+  final String label;
+  final DateTime value;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) => OutlinedButton.icon(
+    onPressed: onPressed,
+    icon: const Icon(Icons.calendar_today_rounded),
+    label: Text('$label · ${DateFormat('yyyy年M月d日').format(value)}'),
+  );
 }
 
 class _FormSection extends StatelessWidget {

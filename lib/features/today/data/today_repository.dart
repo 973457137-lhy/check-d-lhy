@@ -39,8 +39,9 @@ class TodayRepository {
           courses == null ||
           semesters == null ||
           templates == null ||
-          overrides == null)
+          overrides == null) {
         return;
+      }
       controller.add(
         TodaySnapshot(
           date: dateOnly(date),
@@ -53,6 +54,7 @@ class TodayRepository {
             templates!,
           ),
           overrides: overrides!,
+          now: DateTime.now(),
         ),
       );
     }

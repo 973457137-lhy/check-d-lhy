@@ -2029,6 +2029,48 @@ class $OneTimeReminderRecordsTable extends OneTimeReminderRecords
     ),
     defaultValue: const Constant(true),
   );
+  static const VerificationMeta _availableFromMeta = const VerificationMeta(
+    'availableFrom',
+  );
+  @override
+  late final GeneratedColumn<String> availableFrom = GeneratedColumn<String>(
+    'available_from',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _plannedDateMeta = const VerificationMeta(
+    'plannedDate',
+  );
+  @override
+  late final GeneratedColumn<String> plannedDate = GeneratedColumn<String>(
+    'planned_date',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _dueDateMeta = const VerificationMeta(
+    'dueDate',
+  );
+  @override
+  late final GeneratedColumn<String> dueDate = GeneratedColumn<String>(
+    'due_date',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _dueAtMeta = const VerificationMeta('dueAt');
+  @override
+  late final GeneratedColumn<DateTime> dueAt = GeneratedColumn<DateTime>(
+    'due_at',
+    aliasedName,
+    true,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: false,
+  );
   static const VerificationMeta _remindBeforeMinutesMeta =
       const VerificationMeta('remindBeforeMinutes');
   @override
@@ -2093,6 +2135,10 @@ class $OneTimeReminderRecordsTable extends OneTimeReminderRecords
     userId,
     scheduledAt,
     hasScheduledDate,
+    availableFrom,
+    plannedDate,
+    dueDate,
+    dueAt,
     remindBeforeMinutes,
     isTimed,
     completedAt,
@@ -2145,6 +2191,36 @@ class $OneTimeReminderRecordsTable extends OneTimeReminderRecords
           data['has_scheduled_date']!,
           _hasScheduledDateMeta,
         ),
+      );
+    }
+    if (data.containsKey('available_from')) {
+      context.handle(
+        _availableFromMeta,
+        availableFrom.isAcceptableOrUnknown(
+          data['available_from']!,
+          _availableFromMeta,
+        ),
+      );
+    }
+    if (data.containsKey('planned_date')) {
+      context.handle(
+        _plannedDateMeta,
+        plannedDate.isAcceptableOrUnknown(
+          data['planned_date']!,
+          _plannedDateMeta,
+        ),
+      );
+    }
+    if (data.containsKey('due_date')) {
+      context.handle(
+        _dueDateMeta,
+        dueDate.isAcceptableOrUnknown(data['due_date']!, _dueDateMeta),
+      );
+    }
+    if (data.containsKey('due_at')) {
+      context.handle(
+        _dueAtMeta,
+        dueAt.isAcceptableOrUnknown(data['due_at']!, _dueAtMeta),
       );
     }
     if (data.containsKey('remind_before_minutes')) {
@@ -2212,6 +2288,22 @@ class $OneTimeReminderRecordsTable extends OneTimeReminderRecords
         DriftSqlType.bool,
         data['${effectivePrefix}has_scheduled_date'],
       )!,
+      availableFrom: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}available_from'],
+      ),
+      plannedDate: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}planned_date'],
+      ),
+      dueDate: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}due_date'],
+      ),
+      dueAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}due_at'],
+      ),
       remindBeforeMinutes: attachedDatabase.typeMapping.read(
         DriftSqlType.int,
         data['${effectivePrefix}remind_before_minutes'],
@@ -2247,6 +2339,10 @@ class OneTimeReminderRecord extends DataClass
   final String userId;
   final DateTime scheduledAt;
   final bool hasScheduledDate;
+  final String? availableFrom;
+  final String? plannedDate;
+  final String? dueDate;
+  final DateTime? dueAt;
   final int? remindBeforeMinutes;
   final bool isTimed;
   final DateTime? completedAt;
@@ -2257,6 +2353,10 @@ class OneTimeReminderRecord extends DataClass
     required this.userId,
     required this.scheduledAt,
     required this.hasScheduledDate,
+    this.availableFrom,
+    this.plannedDate,
+    this.dueDate,
+    this.dueAt,
     this.remindBeforeMinutes,
     required this.isTimed,
     this.completedAt,
@@ -2270,6 +2370,18 @@ class OneTimeReminderRecord extends DataClass
     map['user_id'] = Variable<String>(userId);
     map['scheduled_at'] = Variable<DateTime>(scheduledAt);
     map['has_scheduled_date'] = Variable<bool>(hasScheduledDate);
+    if (!nullToAbsent || availableFrom != null) {
+      map['available_from'] = Variable<String>(availableFrom);
+    }
+    if (!nullToAbsent || plannedDate != null) {
+      map['planned_date'] = Variable<String>(plannedDate);
+    }
+    if (!nullToAbsent || dueDate != null) {
+      map['due_date'] = Variable<String>(dueDate);
+    }
+    if (!nullToAbsent || dueAt != null) {
+      map['due_at'] = Variable<DateTime>(dueAt);
+    }
     if (!nullToAbsent || remindBeforeMinutes != null) {
       map['remind_before_minutes'] = Variable<int>(remindBeforeMinutes);
     }
@@ -2288,6 +2400,18 @@ class OneTimeReminderRecord extends DataClass
       userId: Value(userId),
       scheduledAt: Value(scheduledAt),
       hasScheduledDate: Value(hasScheduledDate),
+      availableFrom: availableFrom == null && nullToAbsent
+          ? const Value.absent()
+          : Value(availableFrom),
+      plannedDate: plannedDate == null && nullToAbsent
+          ? const Value.absent()
+          : Value(plannedDate),
+      dueDate: dueDate == null && nullToAbsent
+          ? const Value.absent()
+          : Value(dueDate),
+      dueAt: dueAt == null && nullToAbsent
+          ? const Value.absent()
+          : Value(dueAt),
       remindBeforeMinutes: remindBeforeMinutes == null && nullToAbsent
           ? const Value.absent()
           : Value(remindBeforeMinutes),
@@ -2310,6 +2434,10 @@ class OneTimeReminderRecord extends DataClass
       userId: serializer.fromJson<String>(json['userId']),
       scheduledAt: serializer.fromJson<DateTime>(json['scheduledAt']),
       hasScheduledDate: serializer.fromJson<bool>(json['hasScheduledDate']),
+      availableFrom: serializer.fromJson<String?>(json['availableFrom']),
+      plannedDate: serializer.fromJson<String?>(json['plannedDate']),
+      dueDate: serializer.fromJson<String?>(json['dueDate']),
+      dueAt: serializer.fromJson<DateTime?>(json['dueAt']),
       remindBeforeMinutes: serializer.fromJson<int?>(
         json['remindBeforeMinutes'],
       ),
@@ -2327,6 +2455,10 @@ class OneTimeReminderRecord extends DataClass
       'userId': serializer.toJson<String>(userId),
       'scheduledAt': serializer.toJson<DateTime>(scheduledAt),
       'hasScheduledDate': serializer.toJson<bool>(hasScheduledDate),
+      'availableFrom': serializer.toJson<String?>(availableFrom),
+      'plannedDate': serializer.toJson<String?>(plannedDate),
+      'dueDate': serializer.toJson<String?>(dueDate),
+      'dueAt': serializer.toJson<DateTime?>(dueAt),
       'remindBeforeMinutes': serializer.toJson<int?>(remindBeforeMinutes),
       'isTimed': serializer.toJson<bool>(isTimed),
       'completedAt': serializer.toJson<DateTime?>(completedAt),
@@ -2340,6 +2472,10 @@ class OneTimeReminderRecord extends DataClass
     String? userId,
     DateTime? scheduledAt,
     bool? hasScheduledDate,
+    Value<String?> availableFrom = const Value.absent(),
+    Value<String?> plannedDate = const Value.absent(),
+    Value<String?> dueDate = const Value.absent(),
+    Value<DateTime?> dueAt = const Value.absent(),
     Value<int?> remindBeforeMinutes = const Value.absent(),
     bool? isTimed,
     Value<DateTime?> completedAt = const Value.absent(),
@@ -2350,6 +2486,12 @@ class OneTimeReminderRecord extends DataClass
     userId: userId ?? this.userId,
     scheduledAt: scheduledAt ?? this.scheduledAt,
     hasScheduledDate: hasScheduledDate ?? this.hasScheduledDate,
+    availableFrom: availableFrom.present
+        ? availableFrom.value
+        : this.availableFrom,
+    plannedDate: plannedDate.present ? plannedDate.value : this.plannedDate,
+    dueDate: dueDate.present ? dueDate.value : this.dueDate,
+    dueAt: dueAt.present ? dueAt.value : this.dueAt,
     remindBeforeMinutes: remindBeforeMinutes.present
         ? remindBeforeMinutes.value
         : this.remindBeforeMinutes,
@@ -2370,6 +2512,14 @@ class OneTimeReminderRecord extends DataClass
       hasScheduledDate: data.hasScheduledDate.present
           ? data.hasScheduledDate.value
           : this.hasScheduledDate,
+      availableFrom: data.availableFrom.present
+          ? data.availableFrom.value
+          : this.availableFrom,
+      plannedDate: data.plannedDate.present
+          ? data.plannedDate.value
+          : this.plannedDate,
+      dueDate: data.dueDate.present ? data.dueDate.value : this.dueDate,
+      dueAt: data.dueAt.present ? data.dueAt.value : this.dueAt,
       remindBeforeMinutes: data.remindBeforeMinutes.present
           ? data.remindBeforeMinutes.value
           : this.remindBeforeMinutes,
@@ -2389,6 +2539,10 @@ class OneTimeReminderRecord extends DataClass
           ..write('userId: $userId, ')
           ..write('scheduledAt: $scheduledAt, ')
           ..write('hasScheduledDate: $hasScheduledDate, ')
+          ..write('availableFrom: $availableFrom, ')
+          ..write('plannedDate: $plannedDate, ')
+          ..write('dueDate: $dueDate, ')
+          ..write('dueAt: $dueAt, ')
           ..write('remindBeforeMinutes: $remindBeforeMinutes, ')
           ..write('isTimed: $isTimed, ')
           ..write('completedAt: $completedAt, ')
@@ -2404,6 +2558,10 @@ class OneTimeReminderRecord extends DataClass
     userId,
     scheduledAt,
     hasScheduledDate,
+    availableFrom,
+    plannedDate,
+    dueDate,
+    dueAt,
     remindBeforeMinutes,
     isTimed,
     completedAt,
@@ -2418,6 +2576,10 @@ class OneTimeReminderRecord extends DataClass
           other.userId == this.userId &&
           other.scheduledAt == this.scheduledAt &&
           other.hasScheduledDate == this.hasScheduledDate &&
+          other.availableFrom == this.availableFrom &&
+          other.plannedDate == this.plannedDate &&
+          other.dueDate == this.dueDate &&
+          other.dueAt == this.dueAt &&
           other.remindBeforeMinutes == this.remindBeforeMinutes &&
           other.isTimed == this.isTimed &&
           other.completedAt == this.completedAt &&
@@ -2431,6 +2593,10 @@ class OneTimeReminderRecordsCompanion
   final Value<String> userId;
   final Value<DateTime> scheduledAt;
   final Value<bool> hasScheduledDate;
+  final Value<String?> availableFrom;
+  final Value<String?> plannedDate;
+  final Value<String?> dueDate;
+  final Value<DateTime?> dueAt;
   final Value<int?> remindBeforeMinutes;
   final Value<bool> isTimed;
   final Value<DateTime?> completedAt;
@@ -2442,6 +2608,10 @@ class OneTimeReminderRecordsCompanion
     this.userId = const Value.absent(),
     this.scheduledAt = const Value.absent(),
     this.hasScheduledDate = const Value.absent(),
+    this.availableFrom = const Value.absent(),
+    this.plannedDate = const Value.absent(),
+    this.dueDate = const Value.absent(),
+    this.dueAt = const Value.absent(),
     this.remindBeforeMinutes = const Value.absent(),
     this.isTimed = const Value.absent(),
     this.completedAt = const Value.absent(),
@@ -2454,6 +2624,10 @@ class OneTimeReminderRecordsCompanion
     required String userId,
     required DateTime scheduledAt,
     this.hasScheduledDate = const Value.absent(),
+    this.availableFrom = const Value.absent(),
+    this.plannedDate = const Value.absent(),
+    this.dueDate = const Value.absent(),
+    this.dueAt = const Value.absent(),
     this.remindBeforeMinutes = const Value.absent(),
     this.isTimed = const Value.absent(),
     this.completedAt = const Value.absent(),
@@ -2470,6 +2644,10 @@ class OneTimeReminderRecordsCompanion
     Expression<String>? userId,
     Expression<DateTime>? scheduledAt,
     Expression<bool>? hasScheduledDate,
+    Expression<String>? availableFrom,
+    Expression<String>? plannedDate,
+    Expression<String>? dueDate,
+    Expression<DateTime>? dueAt,
     Expression<int>? remindBeforeMinutes,
     Expression<bool>? isTimed,
     Expression<DateTime>? completedAt,
@@ -2482,6 +2660,10 @@ class OneTimeReminderRecordsCompanion
       if (userId != null) 'user_id': userId,
       if (scheduledAt != null) 'scheduled_at': scheduledAt,
       if (hasScheduledDate != null) 'has_scheduled_date': hasScheduledDate,
+      if (availableFrom != null) 'available_from': availableFrom,
+      if (plannedDate != null) 'planned_date': plannedDate,
+      if (dueDate != null) 'due_date': dueDate,
+      if (dueAt != null) 'due_at': dueAt,
       if (remindBeforeMinutes != null)
         'remind_before_minutes': remindBeforeMinutes,
       if (isTimed != null) 'is_timed': isTimed,
@@ -2497,6 +2679,10 @@ class OneTimeReminderRecordsCompanion
     Value<String>? userId,
     Value<DateTime>? scheduledAt,
     Value<bool>? hasScheduledDate,
+    Value<String?>? availableFrom,
+    Value<String?>? plannedDate,
+    Value<String?>? dueDate,
+    Value<DateTime?>? dueAt,
     Value<int?>? remindBeforeMinutes,
     Value<bool>? isTimed,
     Value<DateTime?>? completedAt,
@@ -2509,6 +2695,10 @@ class OneTimeReminderRecordsCompanion
       userId: userId ?? this.userId,
       scheduledAt: scheduledAt ?? this.scheduledAt,
       hasScheduledDate: hasScheduledDate ?? this.hasScheduledDate,
+      availableFrom: availableFrom ?? this.availableFrom,
+      plannedDate: plannedDate ?? this.plannedDate,
+      dueDate: dueDate ?? this.dueDate,
+      dueAt: dueAt ?? this.dueAt,
       remindBeforeMinutes: remindBeforeMinutes ?? this.remindBeforeMinutes,
       isTimed: isTimed ?? this.isTimed,
       completedAt: completedAt ?? this.completedAt,
@@ -2532,6 +2722,18 @@ class OneTimeReminderRecordsCompanion
     }
     if (hasScheduledDate.present) {
       map['has_scheduled_date'] = Variable<bool>(hasScheduledDate.value);
+    }
+    if (availableFrom.present) {
+      map['available_from'] = Variable<String>(availableFrom.value);
+    }
+    if (plannedDate.present) {
+      map['planned_date'] = Variable<String>(plannedDate.value);
+    }
+    if (dueDate.present) {
+      map['due_date'] = Variable<String>(dueDate.value);
+    }
+    if (dueAt.present) {
+      map['due_at'] = Variable<DateTime>(dueAt.value);
     }
     if (remindBeforeMinutes.present) {
       map['remind_before_minutes'] = Variable<int>(remindBeforeMinutes.value);
@@ -2561,6 +2763,10 @@ class OneTimeReminderRecordsCompanion
           ..write('userId: $userId, ')
           ..write('scheduledAt: $scheduledAt, ')
           ..write('hasScheduledDate: $hasScheduledDate, ')
+          ..write('availableFrom: $availableFrom, ')
+          ..write('plannedDate: $plannedDate, ')
+          ..write('dueDate: $dueDate, ')
+          ..write('dueAt: $dueAt, ')
           ..write('remindBeforeMinutes: $remindBeforeMinutes, ')
           ..write('isTimed: $isTimed, ')
           ..write('completedAt: $completedAt, ')
@@ -17790,6 +17996,10 @@ typedef $$OneTimeReminderRecordsTableCreateCompanionBuilder =
       required String userId,
       required DateTime scheduledAt,
       Value<bool> hasScheduledDate,
+      Value<String?> availableFrom,
+      Value<String?> plannedDate,
+      Value<String?> dueDate,
+      Value<DateTime?> dueAt,
       Value<int?> remindBeforeMinutes,
       Value<bool> isTimed,
       Value<DateTime?> completedAt,
@@ -17803,6 +18013,10 @@ typedef $$OneTimeReminderRecordsTableUpdateCompanionBuilder =
       Value<String> userId,
       Value<DateTime> scheduledAt,
       Value<bool> hasScheduledDate,
+      Value<String?> availableFrom,
+      Value<String?> plannedDate,
+      Value<String?> dueDate,
+      Value<DateTime?> dueAt,
       Value<int?> remindBeforeMinutes,
       Value<bool> isTimed,
       Value<DateTime?> completedAt,
@@ -17863,6 +18077,26 @@ class $$OneTimeReminderRecordsTableFilterComposer
 
   ColumnFilters<bool> get hasScheduledDate => $composableBuilder(
     column: $table.hasScheduledDate,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get availableFrom => $composableBuilder(
+    column: $table.availableFrom,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get plannedDate => $composableBuilder(
+    column: $table.plannedDate,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get dueDate => $composableBuilder(
+    column: $table.dueDate,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get dueAt => $composableBuilder(
+    column: $table.dueAt,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -17939,6 +18173,26 @@ class $$OneTimeReminderRecordsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get availableFrom => $composableBuilder(
+    column: $table.availableFrom,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get plannedDate => $composableBuilder(
+    column: $table.plannedDate,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get dueDate => $composableBuilder(
+    column: $table.dueDate,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get dueAt => $composableBuilder(
+    column: $table.dueAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<int> get remindBeforeMinutes => $composableBuilder(
     column: $table.remindBeforeMinutes,
     builder: (column) => ColumnOrderings(column),
@@ -18009,6 +18263,22 @@ class $$OneTimeReminderRecordsTableAnnotationComposer
     column: $table.hasScheduledDate,
     builder: (column) => column,
   );
+
+  GeneratedColumn<String> get availableFrom => $composableBuilder(
+    column: $table.availableFrom,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get plannedDate => $composableBuilder(
+    column: $table.plannedDate,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get dueDate =>
+      $composableBuilder(column: $table.dueDate, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get dueAt =>
+      $composableBuilder(column: $table.dueAt, builder: (column) => column);
 
   GeneratedColumn<int> get remindBeforeMinutes => $composableBuilder(
     column: $table.remindBeforeMinutes,
@@ -18096,6 +18366,10 @@ class $$OneTimeReminderRecordsTableTableManager
                 Value<String> userId = const Value.absent(),
                 Value<DateTime> scheduledAt = const Value.absent(),
                 Value<bool> hasScheduledDate = const Value.absent(),
+                Value<String?> availableFrom = const Value.absent(),
+                Value<String?> plannedDate = const Value.absent(),
+                Value<String?> dueDate = const Value.absent(),
+                Value<DateTime?> dueAt = const Value.absent(),
                 Value<int?> remindBeforeMinutes = const Value.absent(),
                 Value<bool> isTimed = const Value.absent(),
                 Value<DateTime?> completedAt = const Value.absent(),
@@ -18107,6 +18381,10 @@ class $$OneTimeReminderRecordsTableTableManager
                 userId: userId,
                 scheduledAt: scheduledAt,
                 hasScheduledDate: hasScheduledDate,
+                availableFrom: availableFrom,
+                plannedDate: plannedDate,
+                dueDate: dueDate,
+                dueAt: dueAt,
                 remindBeforeMinutes: remindBeforeMinutes,
                 isTimed: isTimed,
                 completedAt: completedAt,
@@ -18120,6 +18398,10 @@ class $$OneTimeReminderRecordsTableTableManager
                 required String userId,
                 required DateTime scheduledAt,
                 Value<bool> hasScheduledDate = const Value.absent(),
+                Value<String?> availableFrom = const Value.absent(),
+                Value<String?> plannedDate = const Value.absent(),
+                Value<String?> dueDate = const Value.absent(),
+                Value<DateTime?> dueAt = const Value.absent(),
                 Value<int?> remindBeforeMinutes = const Value.absent(),
                 Value<bool> isTimed = const Value.absent(),
                 Value<DateTime?> completedAt = const Value.absent(),
@@ -18131,6 +18413,10 @@ class $$OneTimeReminderRecordsTableTableManager
                 userId: userId,
                 scheduledAt: scheduledAt,
                 hasScheduledDate: hasScheduledDate,
+                availableFrom: availableFrom,
+                plannedDate: plannedDate,
+                dueDate: dueDate,
+                dueAt: dueAt,
                 remindBeforeMinutes: remindBeforeMinutes,
                 isTimed: isTimed,
                 completedAt: completedAt,

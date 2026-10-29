@@ -42,36 +42,34 @@ class _SyncUploadHostState extends ConsumerState<SyncUploadHost>
   }
 
   Future<void> _syncFor(AuthState state) async {
-    final upload = ref.read(syncUploadCoordinatorProvider);
+    final account = ref.read(syncAccountCoordinatorProvider);
     final userId = ref.read(supabaseClientProvider)?.auth.currentUser?.id;
     if (state.status != AuthStatus.authenticated || userId == null) {
-      upload?.setActive(false, null);
+      account?.signedOut();
       return;
     }
 
-    final restored = await ref
-        .read(syncDownloadCoordinatorProvider)
-        ?.onAuthenticated(userId);
-    if (restored?.succeeded ?? false) {
+    final result = await account?.onAuthenticated(userId);
+    if (result?.succeeded ?? false) {
       await ref
           .read(reminderSchedulerProvider)
           .refreshFuture()
           .catchError((_) {});
     }
-    upload?.setActive(true, userId);
   }
 
   Future<void> _reconcileOnResume() async {
-    final restored = await ref
-        .read(syncDownloadCoordinatorProvider)
-        ?.onAppResumed();
-    if (restored?.succeeded ?? false) {
+    final userId = ref.read(supabaseClientProvider)?.auth.currentUser?.id;
+    if (userId == null) return;
+    final result = await ref
+        .read(syncAccountCoordinatorProvider)
+        ?.onAppResumed(userId);
+    if (result?.succeeded ?? false) {
       await ref
           .read(reminderSchedulerProvider)
           .refreshFuture()
           .catchError((_) {});
     }
-    ref.read(syncUploadCoordinatorProvider)?.onAppResumed();
   }
 
   @override

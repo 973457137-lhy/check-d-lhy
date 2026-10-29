@@ -1,12 +1,112 @@
 import 'dart:io';
 
-import 'package:drift/drift.dart';
+import 'package:drift/drift.dart' hide isNull;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:check_d/core/database/app_database.dart';
 
 void main() {
+  test(
+    'v19 to v20 preserves old one-time dates without inventing deadlines',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'check_d_stage_14a_migration_',
+      );
+      final file = File('${directory.path}/check_d.sqlite');
+      final now = DateTime.utc(2026, 9, 15);
+      final scheduled = DateTime.utc(2026, 9, 20, 8, 30);
+      final legacy = AppDatabase.forTesting(NativeDatabase(file));
+
+      try {
+        for (final id in ['scheduled', 'unscheduled']) {
+          await legacy
+              .into(legacy.localTasks)
+              .insert(
+                LocalTasksCompanion.insert(
+                  id: id,
+                  userId: const Value('user-1'),
+                  name: id,
+                  taskType: 'oneTime',
+                  colorValue: 1,
+                  createdAt: now,
+                  updatedAt: now,
+                ),
+              );
+        }
+        await legacy
+            .into(legacy.oneTimeReminderRecords)
+            .insert(
+              OneTimeReminderRecordsCompanion.insert(
+                taskId: 'scheduled',
+                userId: 'user-1',
+                scheduledAt: scheduled,
+                hasScheduledDate: const Value(true),
+                createdAt: now,
+                updatedAt: now,
+              ),
+            );
+        await legacy
+            .into(legacy.oneTimeReminderRecords)
+            .insert(
+              OneTimeReminderRecordsCompanion.insert(
+                taskId: 'unscheduled',
+                userId: 'user-1',
+                scheduledAt: now,
+                hasScheduledDate: const Value(false),
+                createdAt: now,
+                updatedAt: now,
+              ),
+            );
+        for (final column in [
+          'available_from',
+          'planned_date',
+          'due_date',
+          'due_at',
+        ]) {
+          await legacy.customStatement(
+            'ALTER TABLE one_time_reminder_records DROP COLUMN $column',
+          );
+        }
+        await legacy.customStatement('PRAGMA user_version = 19');
+        await legacy.close();
+
+        final upgraded = AppDatabase.forTesting(NativeDatabase(file));
+        try {
+          final rows = await (upgraded.select(
+            upgraded.oneTimeReminderRecords,
+          )..orderBy([(row) => OrderingTerm.asc(row.taskId)])).get();
+          final scheduledRow = rows.singleWhere(
+            (row) => row.taskId == 'scheduled',
+          );
+          final unscheduledRow = rows.singleWhere(
+            (row) => row.taskId == 'unscheduled',
+          );
+
+        expect(scheduledRow.hasScheduledDate, isTrue);
+        expect(scheduledRow.scheduledAt.isAtSameMomentAs(scheduled), isTrue);
+        expect(unscheduledRow.hasScheduledDate, isFalse);
+        expect(unscheduledRow.scheduledAt.isAtSameMomentAs(now), isTrue);
+          for (final row in rows) {
+            expect(row.availableFrom, isNull);
+            expect(row.plannedDate, isNull);
+            expect(row.dueDate, isNull);
+            expect(row.dueAt, isNull);
+          }
+        } finally {
+          await upgraded.close();
+        }
+      } finally {
+        if (await file.exists()) {
+          try {
+            await legacy.close();
+          } catch (_) {}
+        }
+        await directory.delete(recursive: true);
+      }
+    },
+  );
+
   test(
     'latest-version database missing Multi Timer intervals self-heals without data loss',
     () async {

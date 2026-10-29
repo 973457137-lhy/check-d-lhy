@@ -62,6 +62,10 @@ class OneTimeReminderRecords extends Table {
   DateTimeColumn get scheduledAt => dateTime()();
   BoolColumn get hasScheduledDate =>
       boolean().withDefault(const Constant(true))();
+  TextColumn get availableFrom => text().nullable()();
+  TextColumn get plannedDate => text().nullable()();
+  TextColumn get dueDate => text().nullable()();
+  DateTimeColumn get dueAt => dateTime().nullable()();
   IntColumn get remindBeforeMinutes => integer().nullable()();
   BoolColumn get isTimed => boolean().withDefault(const Constant(false))();
   DateTimeColumn get completedAt => dateTime().nullable()();
@@ -476,7 +480,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.executor);
 
   @override
-  int get schemaVersion => 19;
+  int get schemaVersion => 20;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -750,6 +754,40 @@ class AppDatabase extends _$AppDatabase {
           await migrator.addColumn(
             timerSessionRecords,
             timerSessionRecords.logicalDate,
+          );
+        }
+      }
+      if (from < 20) {
+        if (!await hasTable('one_time_reminder_records')) {
+          await migrator.createTable(oneTimeReminderRecords);
+        } else if (!await hasColumn(
+          'one_time_reminder_records',
+          'available_from',
+        )) {
+          await migrator.addColumn(
+            oneTimeReminderRecords,
+            oneTimeReminderRecords.availableFrom,
+          );
+        }
+        if (await hasTable('one_time_reminder_records') &&
+            !await hasColumn('one_time_reminder_records', 'planned_date')) {
+          await migrator.addColumn(
+            oneTimeReminderRecords,
+            oneTimeReminderRecords.plannedDate,
+          );
+        }
+        if (await hasTable('one_time_reminder_records') &&
+            !await hasColumn('one_time_reminder_records', 'due_date')) {
+          await migrator.addColumn(
+            oneTimeReminderRecords,
+            oneTimeReminderRecords.dueDate,
+          );
+        }
+        if (await hasTable('one_time_reminder_records') &&
+            !await hasColumn('one_time_reminder_records', 'due_at')) {
+          await migrator.addColumn(
+            oneTimeReminderRecords,
+            oneTimeReminderRecords.dueAt,
           );
         }
       }

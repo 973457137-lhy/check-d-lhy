@@ -66,24 +66,40 @@ class TaskRepository {
   }
 
   Stream<List<TaskDetails>> watchTasksForDate(DateTime date) async* {
-    final query = _database.select(_database.localTasks)
-      ..where(
-        (row) =>
-            row.userId.equals(_userId) &
-            row.status.equals(TaskLifecycle.active.name) &
-            row.deletedAt.isNull(),
-      )
-      ..orderBy([(row) => OrderingTerm.asc(row.createdAt)]);
+    final trigger = _database.customSelect(
+      'SELECT 1',
+      readsFrom: {
+        _database.localTasks,
+        _database.longTermTaskRecords,
+        _database.taskScheduleRecords,
+        _database.oneTimeReminderRecords,
+        _database.taskCompletionRecords,
+        _database.timerSessionRecords,
+      },
+    );
 
-    Future<List<TaskDetails>> load(List<LocalTask> tasks) async {
+    Future<List<TaskDetails>> load() async {
+      final tasks = await _todayCandidateTasks(date);
       final details = await Future.wait(
         tasks.map((task) => _loadDetails(task, date)),
       );
+      final now = DateTime.now();
       final visible = await Future.wait(
         details.map((task) async {
           if (task.kind == TaskKind.oneTime) {
-            final ownerDate = task.scheduledAt ?? task.createdAt;
-            return localDateKey(ownerDate.toLocal()) == localDateKey(date);
+            if (task.isCompleted) {
+              final completedDay = task.oneTimeCompletedAt == null
+                  ? null
+                  : dateOnly(task.oneTimeCompletedAt!.toLocal());
+              final plannedDay = task.effectivePlannedDate;
+              final legacyDay = plannedDay == null
+                  ? dateOnly(task.createdAt.toLocal())
+                  : null;
+              return completedDay == dateOnly(date) ||
+                  plannedDay == dateOnly(date) ||
+                  legacyDay == dateOnly(date);
+            }
+            return task.todayStatus(date, now: now).isVisible;
           }
           return task.schedule != null &&
               await _isDueOn(task.schedule!, task.holidayPause, date);
@@ -97,8 +113,88 @@ class TaskRepository {
 
     // Drift's Web worker can delay the first watch event until a write occurs.
     // Emit an immediate snapshot so consumers never stay in AsyncLoading.
-    yield await load(await query.get());
-    yield* query.watch().asyncMap(load);
+    yield await load();
+    yield* trigger.watch().asyncMap((_) => load());
+  }
+
+  Future<List<LocalTask>> _todayCandidateTasks(DateTime date) async {
+    final day = dateOnly(date);
+    final dayStartUtc = day.toUtc();
+    final dayEndUtc = day.add(const Duration(days: 1)).toUtc();
+    final dateKey = localDateKey(day);
+    final reminderRows = await _database
+        .customSelect(
+          '''
+        SELECT reminder.task_id
+        FROM one_time_reminder_records AS reminder
+        INNER JOIN local_tasks AS task ON task.id = reminder.task_id
+        WHERE reminder.user_id = ?
+          AND (
+            (
+              reminder.completed_at IS NULL
+              AND (
+                (
+                  reminder.has_scheduled_date = 1
+                  AND reminder.scheduled_at < ?
+                )
+                OR (
+                  reminder.has_scheduled_date = 0
+                  AND reminder.planned_date IS NOT NULL
+                  AND reminder.planned_date <= ?
+                )
+                OR (
+                  reminder.has_scheduled_date = 0
+                  AND reminder.planned_date IS NULL
+                  AND (
+                    reminder.available_from IS NOT NULL
+                    OR reminder.due_date IS NOT NULL
+                    OR reminder.due_at IS NOT NULL
+                    OR (task.created_at >= ? AND task.created_at < ?)
+                  )
+                )
+              )
+            )
+            OR (reminder.completed_at >= ? AND reminder.completed_at < ?)
+            OR reminder.planned_date = ?
+            OR (
+              reminder.has_scheduled_date = 1
+              AND reminder.scheduled_at >= ?
+              AND reminder.scheduled_at < ?
+            )
+          )
+      ''',
+          variables: [
+            Variable<String>(_userId),
+            Variable<DateTime>(dayEndUtc),
+            Variable<String>(dateKey),
+            Variable<DateTime>(dayStartUtc),
+            Variable<DateTime>(dayEndUtc),
+            Variable<DateTime>(dayStartUtc),
+            Variable<DateTime>(dayEndUtc),
+            Variable<String>(dateKey),
+            Variable<DateTime>(dayStartUtc),
+            Variable<DateTime>(dayEndUtc),
+          ],
+          readsFrom: {_database.localTasks, _database.oneTimeReminderRecords},
+        )
+        .get();
+    final candidateIds = reminderRows
+        .map((row) => row.read<String>('task_id'))
+        .toSet();
+
+    final taskQuery = _database.select(_database.localTasks)
+      ..where((row) {
+        final recurring = row.taskType.equals(TaskKind.recurring.name);
+        final selectedOneTime = candidateIds.isEmpty
+            ? const Constant(false)
+            : row.id.isIn(candidateIds);
+        return row.userId.equals(_userId) &
+            row.status.equals(TaskLifecycle.active.name) &
+            row.deletedAt.isNull() &
+            (recurring | selectedOneTime);
+      })
+      ..orderBy([(row) => OrderingTerm.asc(row.createdAt)]);
+    return taskQuery.get();
   }
 
   Stream<List<TaskDetails>> watchTasksByStatus(TaskLifecycle status) {
@@ -288,10 +384,12 @@ class TaskRepository {
         final kind = _taskKind(task.taskType);
         if (kind == TaskKind.oneTime) {
           final reminder = reminderByTask[task.id];
+          final plannedDate = reminder == null
+              ? null
+              : _effectiveStoredPlannedDate(reminder);
           if (reminder == null ||
-              !reminder.hasScheduledDate ||
-              localDateKey(reminder.scheduledAt.toLocal()) !=
-                  localDateKey(day)) {
+              plannedDate == null ||
+              localDateKey(plannedDate) != localDateKey(day)) {
             continue;
           }
           dayTasks.add(
@@ -305,7 +403,12 @@ class TaskRepository {
               createdAt: task.createdAt,
               updatedAt: task.updatedAt,
               notes: task.notes,
-              scheduledAt: reminder.scheduledAt.toLocal(),
+              scheduledAt: reminder.hasScheduledDate
+                  ? reminder.scheduledAt.toLocal()
+                  : null,
+              availableFrom: _storedLocalDate(reminder.availableFrom),
+              plannedDate: _storedLocalDate(reminder.plannedDate),
+              deadline: _storedDeadline(reminder),
               remindBeforeMinutes: reminder.remindBeforeMinutes,
               oneTimeExecutionMode: reminder.isTimed
                   ? OneTimeExecutionMode.timed
@@ -514,9 +617,21 @@ class TaskRepository {
     if (draft.name.trim().isEmpty) {
       throw ArgumentError.value(draft.name, 'name', '请填写任务名称');
     }
+    final existing = taskId == null ? null : await getTask(taskId);
+    final allowOverdueReschedule =
+        existing != null &&
+        existing.deadline != null &&
+        TaskTimeSemantics.sameDeadline(existing.deadline, draft.deadline) &&
+        TaskTimeSemantics.isPastDeadline(DateTime.now(), existing.deadline);
+    TaskTimeSemantics.validate(
+      availableFrom: draft.availableFrom,
+      plannedDate: draft.plannedDate,
+      scheduledAt: draft.scheduledAt,
+      deadline: draft.deadline,
+      allowPlanAfterDeadline: allowOverdueReschedule,
+    );
     final id = taskId ?? _uuid.v4();
     final now = DateTime.now().toUtc();
-    final existing = taskId == null ? null : await getTask(taskId);
     await _validateTag(draft.tagId);
     if (taskId != null && existing == null) throw StateError('Task not found');
     if (existing?.hasTimer == true &&
@@ -569,6 +684,22 @@ class TaskRepository {
               userId: _userId,
               scheduledAt: (draft.scheduledAt ?? DateTime.now()).toUtc(),
               hasScheduledDate: Value(draft.scheduledAt != null),
+              availableFrom: Value(
+                draft.availableFrom == null
+                    ? null
+                    : localDateKey(draft.availableFrom!),
+              ),
+              plannedDate: Value(
+                draft.plannedDate == null
+                    ? null
+                    : localDateKey(draft.plannedDate!),
+              ),
+              dueDate: Value(
+                draft.deadline?.isDateOnly == true
+                    ? localDateKey(draft.deadline!.date!)
+                    : null,
+              ),
+              dueAt: Value(draft.deadline?.at?.toUtc()),
               remindBeforeMinutes: Value(draft.remindBeforeMinutes),
               isTimed: Value(draft.executionMode == OneTimeExecutionMode.timed),
               completedAt: Value(existing?.oneTimeCompletedAt),
@@ -592,6 +723,56 @@ class TaskRepository {
       );
     });
     return id;
+  }
+
+  Future<void> planOneTimeTask(String taskId, DateTime date) async {
+    final task = await _requireOneTimeTask(taskId);
+    await saveOneTimeReminder(
+      OneTimeReminderDraft.fromTask(
+        task,
+      ).copyWith(plannedDate: dateOnly(date), scheduledAt: null),
+      taskId: taskId,
+    );
+  }
+
+  Future<void> scheduleOneTimeTask(String taskId, DateTime dateTime) async {
+    final task = await _requireOneTimeTask(taskId);
+    await saveOneTimeReminder(
+      OneTimeReminderDraft.fromTask(task).copyWith(
+        plannedDate: dateOnly(dateTime.toLocal()),
+        scheduledAt: dateTime,
+      ),
+      taskId: taskId,
+    );
+  }
+
+  Future<void> cancelOneTimeSchedule(String taskId) async {
+    final task = await _requireOneTimeTask(taskId);
+    await saveOneTimeReminder(
+      OneTimeReminderDraft.fromTask(
+        task,
+      ).copyWith(plannedDate: null, scheduledAt: null),
+      taskId: taskId,
+    );
+  }
+
+  Future<void> updateOneTimeDeadline(
+    String taskId,
+    TaskDeadline? deadline,
+  ) async {
+    final task = await _requireOneTimeTask(taskId);
+    await saveOneTimeReminder(
+      OneTimeReminderDraft.fromTask(task).copyWith(deadline: deadline),
+      taskId: taskId,
+    );
+  }
+
+  Future<TaskDetails> _requireOneTimeTask(String taskId) async {
+    final task = await getTask(taskId);
+    if (task == null || task.kind != TaskKind.oneTime) {
+      throw StateError('单次事项不存在或已归档。');
+    }
+    return task;
   }
 
   Future<void> toggleRecurringCompletion(String taskId, DateTime date) async {
@@ -1089,6 +1270,9 @@ class TaskRepository {
       scheduledAt: reminder.hasScheduledDate
           ? reminder.scheduledAt.toLocal()
           : null,
+      availableFrom: _storedLocalDate(reminder.availableFrom),
+      plannedDate: _storedLocalDate(reminder.plannedDate),
+      deadline: _storedDeadline(reminder),
       remindBeforeMinutes: reminder.remindBeforeMinutes,
       oneTimeExecutionMode: reminder.isTimed
           ? OneTimeExecutionMode.timed
@@ -1418,6 +1602,16 @@ class TaskRepository {
       'notes': _normalizedNotes(draft.notes),
       'scheduled_at': draft.scheduledAt?.toUtc().toIso8601String(),
       'has_scheduled_date': draft.scheduledAt != null,
+      'available_from': draft.availableFrom == null
+          ? null
+          : localDateKey(draft.availableFrom!),
+      'planned_date': draft.plannedDate == null
+          ? null
+          : localDateKey(draft.plannedDate!),
+      'due_date': draft.deadline?.isDateOnly == true
+          ? localDateKey(draft.deadline!.date!)
+          : null,
+      'due_at': draft.deadline?.at?.toUtc().toIso8601String(),
       'remind_before_minutes': draft.remindBeforeMinutes,
       'is_timed': draft.executionMode == OneTimeExecutionMode.timed,
       'updated_at': updatedAt.toIso8601String(),
@@ -1453,6 +1647,16 @@ class TaskRepository {
           ? null
           : localDateKey(task.schedule!.endsOn!),
       'scheduled_at': task.scheduledAt?.toUtc().toIso8601String(),
+      'available_from': task.availableFrom == null
+          ? null
+          : localDateKey(task.availableFrom!),
+      'planned_date': task.plannedDate == null
+          ? null
+          : localDateKey(task.plannedDate!),
+      'due_date': task.deadline?.isDateOnly == true
+          ? localDateKey(task.deadline!.date!)
+          : null,
+      'due_at': task.deadline?.at?.toUtc().toIso8601String(),
       'remind_before_minutes': task.remindBeforeMinutes,
       'is_timed': task.oneTimeExecutionMode == OneTimeExecutionMode.timed,
       'updated_at': task.updatedAt.toIso8601String(),
@@ -1462,6 +1666,25 @@ class TaskRepository {
   List<int> _sortedWeekdays(Iterable<int> weekdays) {
     final values = weekdays.toList()..sort();
     return values;
+  }
+
+  DateTime? _storedLocalDate(String? value) {
+    if (value == null) return null;
+    final parsed = DateTime.tryParse(value);
+    return parsed == null ? null : dateOnly(parsed);
+  }
+
+  DateTime? _effectiveStoredPlannedDate(OneTimeReminderRecord reminder) {
+    if (reminder.hasScheduledDate) return reminder.scheduledAt.toLocal();
+    return _storedLocalDate(reminder.plannedDate);
+  }
+
+  TaskDeadline? _storedDeadline(OneTimeReminderRecord reminder) {
+    if (reminder.dueAt != null) {
+      return TaskDeadline.exact(reminder.dueAt!.toLocal());
+    }
+    final dueDate = _storedLocalDate(reminder.dueDate);
+    return dueDate == null ? null : TaskDeadline.dateOnly(dueDate);
   }
 
   TaskKind _taskKind(String value) {

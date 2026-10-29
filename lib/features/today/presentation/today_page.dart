@@ -14,6 +14,7 @@ import '../../reviews/presentation/reviews_page.dart';
 import '../../statistics/presentation/tag_time_breakdown.dart';
 import '../../tasks/application/task_providers.dart';
 import '../../tasks/domain/task_models.dart';
+import '../../tasks/presentation/one_time_reminder_form_page.dart';
 import '../../tasks/presentation/task_detail_page.dart';
 import '../../tasks/presentation/task_icon_picker.dart';
 import '../../tasks/presentation/task_list_page.dart';
@@ -370,16 +371,18 @@ class _DesktopAgenda extends StatelessWidget {
     };
     final pending = data.tasks.where((task) {
       final override = overrides[task.id];
-      return !task.isCompleted && override?.action != DayOverrideAction.skip;
+      return _isTodayPendingTask(task, override, data.date, data.now);
     }).toList();
     final timeline = <_DesktopAgendaEntry>[
       ...data.courses.map(_DesktopAgendaCourse.new),
       ...data.tasks
-          .where((task) => _taskMinute(task, overrides[task.id]) != null)
+          .where(
+            (task) => _taskMinute(task, overrides[task.id], data.date) != null,
+          )
           .map(
             (task) => _DesktopAgendaTask(
               task,
-              _taskMinute(task, overrides[task.id])!,
+              _taskMinute(task, overrides[task.id], data.date)!,
             ),
           ),
     ]..sort((a, b) => a.startMinute.compareTo(b.startMinute));
@@ -656,12 +659,206 @@ class _DesktopAgendaCourse extends _DesktopAgendaEntry {
   final TodayCourseItem course;
 }
 
-int? _taskMinute(TaskDetails task, DailyItemOverride? override) {
+int? _taskMinute(TaskDetails task, DailyItemOverride? override, DateTime date) {
   if (override?.action == DayOverrideAction.skip) return null;
   if (override?.plannedStartMinute != null) return override!.plannedStartMinute;
   if (task.kind == TaskKind.recurring) return task.scheduledMinuteOfDay;
-  final date = task.scheduledAt;
-  return date == null ? null : date.hour * 60 + date.minute;
+  final scheduledAt = task.scheduledAt;
+  if (scheduledAt == null || dateOnly(scheduledAt) != dateOnly(date)) {
+    return null;
+  }
+  return scheduledAt.hour * 60 + scheduledAt.minute;
+}
+
+bool _isTodayPendingTask(
+  TaskDetails task,
+  DailyItemOverride? override,
+  DateTime date,
+  DateTime now,
+) {
+  if (task.isCompleted || override?.action == DayOverrideAction.skip) {
+    return false;
+  }
+  if (override?.plannedStartMinute != null) return false;
+  if (task.kind == TaskKind.oneTime) {
+    return task.todayStatus(date, now: now).belongsInPending;
+  }
+  return _taskMinute(task, override, date) == null;
+}
+
+enum _OneTimeScheduleAction {
+  today,
+  tomorrow,
+  chooseDate,
+  chooseTime,
+  cancelSchedule,
+  editDeadline,
+}
+
+class _OneTimeScheduleButton extends ConsumerWidget {
+  const _OneTimeScheduleButton({required this.task});
+
+  final TaskDetails task;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) => TextButton(
+    onPressed: () => _showOneTimeScheduleActions(context, ref, task),
+    child: const Text('安排'),
+  );
+}
+
+Future<void> _showOneTimeScheduleActions(
+  BuildContext context,
+  WidgetRef ref,
+  TaskDetails task,
+) async {
+  final action = await showModalBottomSheet<_OneTimeScheduleAction>(
+    context: context,
+    showDragHandle: true,
+    builder: (context) => SafeArea(
+      child: ListView(
+        shrinkWrap: true,
+        padding: const EdgeInsets.only(bottom: 12),
+        children: [
+          ListTile(
+            leading: const Icon(Icons.today_rounded),
+            title: const Text('今天做'),
+            subtitle: const Text('安排到真实的今天，不修改截止时间'),
+            onTap: () => Navigator.pop(context, _OneTimeScheduleAction.today),
+          ),
+          ListTile(
+            leading: const Icon(Icons.event_rounded),
+            title: const Text('明天做'),
+            subtitle: const Text('安排到真实的明天，不修改截止时间'),
+            onTap: () =>
+                Navigator.pop(context, _OneTimeScheduleAction.tomorrow),
+          ),
+          ListTile(
+            leading: const Icon(Icons.date_range_rounded),
+            title: const Text('选择日期'),
+            subtitle: const Text('设置计划日期，不指定具体时间'),
+            onTap: () =>
+                Navigator.pop(context, _OneTimeScheduleAction.chooseDate),
+          ),
+          ListTile(
+            leading: const Icon(Icons.schedule_rounded),
+            title: const Text('设置具体时间'),
+            subtitle: const Text('选择日期和 24 小时制时间'),
+            onTap: () =>
+                Navigator.pop(context, _OneTimeScheduleAction.chooseTime),
+          ),
+          ListTile(
+            leading: const Icon(Icons.event_busy_rounded),
+            title: const Text('取消安排'),
+            subtitle: const Text('保留事项、截止时间和计时记录'),
+            onTap: () =>
+                Navigator.pop(context, _OneTimeScheduleAction.cancelSchedule),
+          ),
+          ListTile(
+            leading: const Icon(Icons.flag_outlined),
+            title: const Text('修改截止时间'),
+            subtitle: const Text('截止时间与计划安排相互独立'),
+            onTap: () =>
+                Navigator.pop(context, _OneTimeScheduleAction.editDeadline),
+          ),
+        ],
+      ),
+    ),
+  );
+  if (action == null || !context.mounted) return;
+  await _applyOneTimeScheduleAction(context, ref, task, action);
+}
+
+Future<void> _applyOneTimeScheduleAction(
+  BuildContext context,
+  WidgetRef ref,
+  TaskDetails task,
+  _OneTimeScheduleAction action,
+) async {
+  if (action == _OneTimeScheduleAction.editDeadline) {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => OneTimeReminderFormPage(initialTask: task),
+      ),
+    );
+    return;
+  }
+
+  final repository = ref.read(taskRepositoryProvider);
+  final today = dateOnly(DateTime.now());
+  try {
+    switch (action) {
+      case _OneTimeScheduleAction.today:
+        await repository.planOneTimeTask(task.id, today);
+        break;
+      case _OneTimeScheduleAction.tomorrow:
+        await repository.planOneTimeTask(
+          task.id,
+          today.add(const Duration(days: 1)),
+        );
+        break;
+      case _OneTimeScheduleAction.chooseDate:
+        final selected = await showDatePicker(
+          context: context,
+          initialDate: task.effectivePlannedDate ?? today,
+          firstDate: DateTime(2020),
+          lastDate: DateTime(2100),
+        );
+        if (selected == null) return;
+        await repository.planOneTimeTask(task.id, selected);
+        break;
+      case _OneTimeScheduleAction.chooseTime:
+        final selectedDate = await showDatePicker(
+          context: context,
+          initialDate: task.effectivePlannedDate ?? today,
+          firstDate: DateTime(2020),
+          lastDate: DateTime(2100),
+        );
+        if (selectedDate == null || !context.mounted) return;
+        final selectedTime = await showAppTimePicker(
+          context: context,
+          initialTime: TimeOfDay.fromDateTime(
+            task.scheduledAt ?? DateTime.now().add(const Duration(hours: 1)),
+          ),
+          helpText: '设置具体时间',
+        );
+        if (selectedTime == null) return;
+        await repository.scheduleOneTimeTask(
+          task.id,
+          DateTime(
+            selectedDate.year,
+            selectedDate.month,
+            selectedDate.day,
+            selectedTime.hour,
+            selectedTime.minute,
+          ),
+        );
+        break;
+      case _OneTimeScheduleAction.cancelSchedule:
+        await repository.cancelOneTimeSchedule(task.id);
+        break;
+      case _OneTimeScheduleAction.editDeadline:
+        break;
+    }
+    if (context.mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('安排已更新')));
+    }
+  } on Object catch (error) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(_taskActionErrorMessage(error))));
+    }
+  }
+}
+
+String _taskActionErrorMessage(Object error) {
+  if (error is ArgumentError && error.message != null) {
+    return error.message.toString();
+  }
+  return '安排失败，请稍后重试';
 }
 
 class _DesktopPendingItems extends ConsumerWidget {
@@ -722,7 +919,8 @@ class _DesktopPendingItems extends ConsumerWidget {
                   return _DesktopPendingChip(
                     task: task,
                     enabled: isToday,
-                    plannedMinute: _taskMinute(task, overrides[task.id]),
+                    plannedMinute: _taskMinute(task, overrides[task.id], date),
+                    date: date,
                   );
                 },
               ),
@@ -738,10 +936,12 @@ class _DesktopPendingChip extends ConsumerWidget {
     required this.task,
     required this.enabled,
     required this.plannedMinute,
+    required this.date,
   });
   final TaskDetails task;
   final bool enabled;
   final int? plannedMinute;
+  final DateTime date;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -754,6 +954,19 @@ class _DesktopPendingChip extends ConsumerWidget {
         timer?.elapsedSecondsAt(now) ?? task.todayActualDurationSeconds;
     final running = timer?.isRunning ?? false;
     final paused = timer?.isPaused ?? false;
+    final timingLabel = task.kind == TaskKind.oneTime
+        ? _oneTimeTodayLabel(task, date, now)
+        : null;
+    final minute = plannedMinute;
+    final idleLabel =
+        timingLabel ??
+        (minute == null
+            ? _desktopPendingTimerLabel(task, timer)
+            : _formatMinute(minute));
+    final subtitle = running || paused
+        ? '${running ? '进行中' : '已暂停'} · ${formatDuration(elapsed)}'
+              '${timingLabel == null ? '' : ' · $timingLabel'}'
+        : idleLabel;
     final content = CheckDSurface(
       level: running
           ? CheckDSurfaceLevel.glassActive
@@ -792,11 +1005,7 @@ class _DesktopPendingChip extends ConsumerWidget {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    running || paused
-                        ? '${running ? '进行中' : '已暂停'} · ${formatDuration(elapsed)}'
-                        : plannedMinute == null
-                        ? _desktopPendingTimerLabel(task, timer)
-                        : _formatMinute(plannedMinute!),
+                    subtitle,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
@@ -825,6 +1034,8 @@ class _DesktopPendingChip extends ConsumerWidget {
                   framed: false,
                 ),
               ),
+            if (enabled && task.kind == TaskKind.oneTime)
+              _OneTimeScheduleButton(task: task),
             if (enabled)
               task.hasTimer
                   ? Row(
@@ -966,6 +1177,36 @@ class _DesktopTimeline extends ConsumerWidget {
     if (selected == null || !context.mounted) return;
     final selectedMinute = selected.hour * 60 + selected.minute;
     final minute = selectedMinute > 1409 ? 1409 : selectedMinute;
+    if (task.kind == TaskKind.oneTime) {
+      try {
+        await ref
+            .read(taskRepositoryProvider)
+            .scheduleOneTimeTask(
+              task.id,
+              DateTime(
+                data.date.year,
+                data.date.month,
+                data.date.day,
+                minute ~/ 60,
+                minute % 60,
+              ),
+            );
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('已将${task.name}安排到${_formatMinute(minute)}'),
+            ),
+          );
+        }
+      } on Object catch (error) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(_taskActionErrorMessage(error))),
+          );
+        }
+      }
+      return;
+    }
     DailyItemOverride? existing;
     for (final override in data.overrides) {
       if (override.itemId == task.id &&
@@ -1090,6 +1331,7 @@ class _DesktopTaskAgendaRow extends ConsumerWidget {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
+          if (task.kind == TaskKind.oneTime) _OneTimeScheduleButton(task: task),
           if (task.hasTimer && isToday)
             Row(
               mainAxisSize: MainAxisSize.min,
@@ -1632,7 +1874,7 @@ class _DesktopUpcomingItems extends ConsumerWidget {
             overrideMap[task.id]?.action == DayOverrideAction.skip) {
           continue;
         }
-        final minute = _taskMinute(task, overrideMap[task.id]);
+        final minute = _taskMinute(task, overrideMap[task.id], day);
         if (minute == null) continue;
         upcoming.add((
           date: day,
@@ -2058,6 +2300,7 @@ class _TabletLayout extends StatelessWidget {
         _TodayArrangement(
           tasks: data.tasks,
           courses: data.courses,
+          date: data.date,
           now: data.isToday ? data.now : null,
         ),
         const SizedBox(height: 18),
@@ -2087,7 +2330,7 @@ class _MobileLayout extends StatelessWidget {
     };
     final pending = data.tasks.where((task) {
       final override = overrides[task.id];
-      return _isMobilePendingTask(task, override);
+      return _isTodayPendingTask(task, override, data.date, data.now);
     }).toList();
 
     return Stack(
@@ -2114,6 +2357,7 @@ class _MobileLayout extends StatelessWidget {
                 date: data.date,
                 tasks: pending,
                 isToday: data.isToday,
+                now: data.now,
               ),
               const SizedBox(height: 20),
               _ThreeDaySchedule(
@@ -2139,30 +2383,18 @@ class _MobileLayout extends StatelessWidget {
   }
 }
 
-bool _isMobilePendingTask(TaskDetails task, DailyItemOverride? override) {
-  if (task.isCompleted || override?.action == DayOverrideAction.skip) {
-    return false;
-  }
-
-  // One-off items are projected by their exact planned time, never by their
-  // execution mode. A timer can be running or paused while the item remains
-  // a pending, untimed item in Today.
-  if (task.kind == TaskKind.oneTime) {
-    return task.scheduledAt == null && override?.plannedStartMinute == null;
-  }
-  return _taskMinute(task, override) == null;
-}
-
 class _PendingTasksSection extends StatelessWidget {
   const _PendingTasksSection({
     required this.date,
     required this.tasks,
     required this.isToday,
+    required this.now,
   });
 
   final DateTime date;
   final List<TaskDetails> tasks;
   final bool isToday;
+  final DateTime now;
 
   @override
   Widget build(BuildContext context) => Column(
@@ -2201,7 +2433,12 @@ class _PendingTasksSection extends StatelessWidget {
             : Column(
                 children: [
                   for (var index = 0; index < tasks.length; index++) ...[
-                    _PendingTaskRow(task: tasks[index], enabled: isToday),
+                    _PendingTaskRow(
+                      task: tasks[index],
+                      date: date,
+                      now: now,
+                      enabled: isToday,
+                    ),
                     if (index != tasks.length - 1)
                       const Divider(height: 1, indent: 18, endIndent: 18),
                   ],
@@ -2231,20 +2468,27 @@ String _pendingEmptyTitle(DateTime date) {
 }
 
 class _PendingTaskRow extends ConsumerWidget {
-  const _PendingTaskRow({required this.task, required this.enabled});
+  const _PendingTaskRow({
+    required this.task,
+    required this.date,
+    required this.now,
+    required this.enabled,
+  });
 
   final TaskDetails task;
+  final DateTime date;
+  final DateTime now;
   final bool enabled;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final color = Color(task.colorValue);
-    final now = ref.watch(timerNowProvider).value ?? DateTime.now();
+    final timerNow = ref.watch(timerNowProvider).value ?? now;
     final timer = task.hasTimer
         ? ref.watch(taskTimerStateProvider(task.id)).value
         : null;
     final elapsed =
-        timer?.elapsedSecondsAt(now) ?? task.todayActualDurationSeconds;
+        timer?.elapsedSecondsAt(timerNow) ?? task.todayActualDurationSeconds;
     final target = task.targetDurationSeconds ?? 0;
     final progress = target > 0
         ? (elapsed / target).clamp(0, 1).toDouble()
@@ -2252,6 +2496,9 @@ class _PendingTaskRow extends ConsumerWidget {
     final status = timer?.latest?.status;
     final active = status == TimerSessionStatus.running;
     final paused = status == TimerSessionStatus.paused;
+    final timingLabel = task.kind == TaskKind.oneTime
+        ? _oneTimeTodayLabel(task, date, timerNow)
+        : null;
     final stateKey = active
         ? 'running'
         : paused
@@ -2314,8 +2561,13 @@ class _PendingTaskRow extends ConsumerWidget {
                             Flexible(
                               child: Text(
                                 task.hasTimer
-                                    ? _pendingTimerLabel(task, elapsed, status)
-                                    : '时间未定',
+                                    ? _pendingTimerLabel(
+                                        task,
+                                        elapsed,
+                                        status,
+                                        timingLabel: timingLabel,
+                                      )
+                                    : timingLabel ?? '未安排',
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
@@ -2353,6 +2605,8 @@ class _PendingTaskRow extends ConsumerWidget {
                         )
                       : const SizedBox.shrink(key: ValueKey('no-sheep')),
                 ),
+                if (enabled && task.kind == TaskKind.oneTime)
+                  _OneTimeScheduleButton(task: task),
                 if (!task.hasTimer)
                   _CompletionButton(
                     task: task,
@@ -2408,8 +2662,9 @@ class _PendingTaskRow extends ConsumerWidget {
 String _pendingTimerLabel(
   TaskDetails task,
   int elapsed,
-  TimerSessionStatus? status,
-) {
+  TimerSessionStatus? status, {
+  String? timingLabel,
+}) {
   final target = task.targetDurationSeconds;
   final prefix = switch (status) {
     TimerSessionStatus.running => '进行中 · ',
@@ -2417,13 +2672,48 @@ String _pendingTimerLabel(
     _ => '',
   };
   if (target != null && target > 0) {
-    return '$prefix${formatDuration(elapsed)} / ${formatDuration(target)}';
+    return '$prefix${formatDuration(elapsed)} / ${formatDuration(target)}'
+        '${timingLabel == null ? '' : ' · $timingLabel'}';
   }
   if (status == TimerSessionStatus.running ||
       status == TimerSessionStatus.paused) {
-    return '$prefix${formatDuration(elapsed)}';
+    return '$prefix${formatDuration(elapsed)}'
+        '${timingLabel == null ? '' : ' · $timingLabel'}';
   }
-  return elapsed > 0 ? '$prefix已专注 ${formatDuration(elapsed)}' : '时间未定';
+  if (elapsed > 0) {
+    return '$prefix已专注 ${formatDuration(elapsed)}'
+        '${timingLabel == null ? '' : ' · $timingLabel'}';
+  }
+  return timingLabel ?? '未安排';
+}
+
+String _oneTimeTodayLabel(TaskDetails task, DateTime date, DateTime now) {
+  final status = task.todayStatus(date, now: now);
+  return switch (status.state) {
+    OneTimeTodayState.overdue =>
+      status.overdueDays == 0 ? '已逾期' : '已逾期 ${status.overdueDays} 天',
+    OneTimeTodayState.carryOver => '计划未完成 · 待重新安排',
+    OneTimeTodayState.plannedToday =>
+      _deadlineLabel(task.deadline, now) ?? '计划今天完成',
+    OneTimeTodayState.pendingUnscheduled =>
+      _deadlineLabel(task.deadline, now) ?? '未安排',
+    OneTimeTodayState.scheduledToday =>
+      _deadlineLabel(task.deadline, now) ?? '今天已安排',
+    _ => _deadlineLabel(task.deadline, now) ?? '未安排',
+  };
+}
+
+String? _deadlineLabel(TaskDeadline? deadline, DateTime now) {
+  if (deadline == null) return null;
+  final dueDay = deadline.localDate;
+  final today = dateOnly(now.toLocal());
+  final dayPrefix = dueDay == today
+      ? '今天'
+      : dueDay == today.add(const Duration(days: 1))
+      ? '明天'
+      : '${dueDay.month}月${dueDay.day}日';
+  if (deadline.isDateOnly) return '$dayPrefix截止';
+  return '$dayPrefix ${DateFormat('HH:mm').format(deadline.at!.toLocal())} 截止';
 }
 
 class _ThreeDaySchedule extends ConsumerStatefulWidget {
@@ -2487,7 +2777,7 @@ class _ThreeDayScheduleState extends ConsumerState<_ThreeDaySchedule> {
     final scheduledTaskCount = tasks.where((task) {
       final override = taskOverrides[task.id];
       return override?.action != DayOverrideAction.skip &&
-          _taskMinute(task, override) != null;
+          _taskMinute(task, override, selected) != null;
     }).length;
     final courseCount = buildCourseItemsForDate(
       selected,
@@ -2781,12 +3071,12 @@ class _MobileScheduleContents extends StatelessWidget {
           .where((task) {
             final override = taskOverrides[task.id];
             return override?.action != DayOverrideAction.skip &&
-                _taskMinute(task, override) != null;
+                _taskMinute(task, override, date) != null;
           })
           .map(
             (task) => _DesktopAgendaTask(
               task,
-              _taskMinute(task, taskOverrides[task.id])!,
+              _taskMinute(task, taskOverrides[task.id], date)!,
             ),
           ),
     ]..sort((a, b) => a.startMinute.compareTo(b.startMinute));
@@ -2924,6 +3214,7 @@ class _MobileScheduleRow extends ConsumerWidget {
                   style: const TextStyle(fontWeight: FontWeight.w700),
                 ),
               ),
+              if (task != null) _OneTimeScheduleButton(task: task),
               if (task != null)
                 _CompletionButton(
                   task: task,
@@ -2982,7 +3273,9 @@ class _MobileScheduleRow extends ConsumerWidget {
       height: isCurrentCourse
           ? 56
           : task != null
-          ? 50
+          ? task.kind == TaskKind.oneTime
+                ? 62
+                : 50
           : 46,
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -4411,10 +4704,12 @@ class _InlineTimerControlsState extends ConsumerState<_InlineTimerControls> {
 class _TodayArrangement extends StatelessWidget {
   const _TodayArrangement({
     required this.tasks,
+    required this.date,
     this.courses = const [],
     this.now,
   });
   final List<TaskDetails> tasks;
+  final DateTime date;
   final List<TodayCourseItem> courses;
   final DateTime? now;
   @override
@@ -4466,7 +4761,9 @@ class _TodayArrangement extends StatelessWidget {
 
   bool _isArranged(TaskDetails task) => task.kind == TaskKind.recurring
       ? task.scheduledMinuteOfDay != null && task.reminderMinuteOfDay != null
-      : task.scheduledAt != null && task.remindBeforeMinutes != null;
+      : task.scheduledAt != null &&
+            dateOnly(task.scheduledAt!) == dateOnly(date) &&
+            task.remindBeforeMinutes != null;
   int _minuteOf(TaskDetails task) => task.kind == TaskKind.recurring
       ? task.scheduledMinuteOfDay!
       : task.scheduledAt!.hour * 60 + task.scheduledAt!.minute;

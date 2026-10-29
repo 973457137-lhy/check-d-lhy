@@ -57,9 +57,8 @@ List<CalendarOccurrence> buildCalendarOccurrencesForDate({
   };
 
   for (final task in tasks) {
-    // A one-off item owns exactly one calendar day. Untimed one-off records
-    // predate an explicit date field, so their persisted creation day is the
-    // stable fallback used by the existing local model.
+    // A one-off item can own at most one calendar day. Availability and
+    // deadline ranges never create repeated occurrences.
     if (task.kind == TaskKind.oneTime && !_oneTimeBelongsToDate(task, day)) {
       continue;
     }
@@ -100,7 +99,8 @@ List<CalendarOccurrence> buildCalendarOccurrencesForDate({
 }
 
 bool _oneTimeBelongsToDate(TaskDetails task, DateTime date) {
-  final ownerDate = task.scheduledAt ?? task.createdAt;
+  final ownerDate = task.effectivePlannedDate;
+  if (ownerDate == null) return false;
   return localDateKey(ownerDate.toLocal()) == localDateKey(date);
 }
 

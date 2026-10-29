@@ -124,7 +124,33 @@ void main() {
       status: TaskLifecycle.active,
       createdAt: createdAt,
       updatedAt: createdAt,
+      availableFrom: today,
+      deadline: TaskDeadline.dateOnly(today.add(const Duration(days: 1))),
       oneTimeExecutionMode: OneTimeExecutionMode.timed,
+    );
+    final carryOver = TaskDetails(
+      id: 'carry-over',
+      name: '补交实验报告',
+      kind: TaskKind.oneTime,
+      colorValue: 0xFFF2AB79,
+      status: TaskLifecycle.active,
+      createdAt: createdAt,
+      updatedAt: createdAt,
+      plannedDate: today.subtract(const Duration(days: 1)),
+      deadline: TaskDeadline.dateOnly(today.add(const Duration(days: 2))),
+      oneTimeExecutionMode: OneTimeExecutionMode.untimed,
+    );
+    final overdue = TaskDetails(
+      id: 'overdue',
+      name: '逾期论文',
+      kind: TaskKind.oneTime,
+      colorValue: 0xFFEF8FA8,
+      status: TaskLifecycle.active,
+      createdAt: createdAt,
+      updatedAt: createdAt,
+      availableFrom: today.subtract(const Duration(days: 2)),
+      deadline: TaskDeadline.dateOnly(today.subtract(const Duration(days: 1))),
+      oneTimeExecutionMode: OneTimeExecutionMode.untimed,
     );
 
     await tester.pumpWidget(
@@ -142,7 +168,13 @@ void main() {
           ),
           tasksForDateProvider.overrideWith((ref, date) {
             if (dateOnly(date) == today) {
-              return Stream.value([pending, scheduled, untimedOneOff]);
+              return Stream.value([
+                pending,
+                scheduled,
+                untimedOneOff,
+                carryOver,
+                overdue,
+              ]);
             }
             return Stream.value(const <TaskDetails>[]);
           }),
@@ -166,13 +198,30 @@ void main() {
     expect(find.text('今日待完成'), findsOneWidget);
     expect(find.text('背单词'), findsWidgets);
     expect(find.text('临时阅读'), findsWidgets);
+    expect(find.text('补交实验报告'), findsWidgets);
+    expect(find.text('逾期论文'), findsWidgets);
     expect(find.text('数据库作业'), findsWidgets);
+    expect(find.text('明天截止'), findsOneWidget);
+    expect(find.text('计划未完成 · 待重新安排'), findsOneWidget);
+    expect(find.text('已逾期 1 天'), findsOneWidget);
     expect(find.text('查看详情'), findsNothing);
     expect(find.byIcon(Icons.radio_button_unchecked_rounded), findsWidgets);
     expect(find.text('周期任务'), findsNothing);
     expect(find.text('单次事项'), findsNothing);
     expect(find.byType(CheckDSheep), findsNWidgets(5));
     expect(tester.takeException(), isNull);
+
+    expect(find.widgetWithText(TextButton, '安排'), findsWidgets);
+    await tester.tap(find.widgetWithText(TextButton, '安排').first);
+    await tester.pumpAndSettle();
+    expect(find.text('今天做'), findsOneWidget);
+    expect(find.text('明天做'), findsOneWidget);
+    expect(find.text('选择日期'), findsOneWidget);
+    expect(find.text('设置具体时间'), findsOneWidget);
+    expect(find.text('取消安排'), findsOneWidget);
+    expect(find.text('修改截止时间'), findsOneWidget);
+    Navigator.of(tester.element(find.text('今天做'))).pop();
+    await tester.pumpAndSettle();
 
     await tester.drag(find.byType(PageView), const Offset(-140, 0));
     await tester.pumpAndSettle();

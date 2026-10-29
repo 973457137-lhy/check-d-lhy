@@ -2,7 +2,7 @@ import 'package:check_d/core/database/app_database.dart';
 import 'package:check_d/core/sync/sync_queue_service.dart';
 import 'package:check_d/features/tasks/data/task_repository.dart';
 import 'package:check_d/features/tasks/domain/task_models.dart';
-import 'package:drift/drift.dart' hide isNotNull;
+import 'package:drift/drift.dart' hide isNotNull, isNull;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -36,6 +36,7 @@ void main() {
     final tasks = await repository.watchTasksForDate(day).first;
 
     expect(tasks, hasLength(2));
+    expect(tasks.map((task) => task.name), containsAll(['英语听力', '项目会议']));
     expect(tasks.map((task) => task.kind), {
       TaskKind.recurring,
       TaskKind.oneTime,
@@ -69,6 +70,119 @@ void main() {
       isEmpty,
     );
   });
+
+  test(
+    'flexible one-off stays visible across days as one stored task',
+    () async {
+      final monday = DateTime(2026, 9, 21);
+      final sunday = DateTime(2026, 9, 27);
+      final taskId = await repository.saveOneTimeReminder(
+        OneTimeReminderDraft(
+          name: '数据库作业',
+          colorValue: 1,
+          availableFrom: monday,
+          deadline: TaskDeadline.dateOnly(sunday),
+        ),
+      );
+
+      final mondayTasks = await repository.watchTasksForDate(monday).first;
+      final tuesdayTasks = await repository
+          .watchTasksForDate(monday.add(const Duration(days: 1)))
+          .first;
+      expect(mondayTasks.single.id, taskId);
+      expect(tuesdayTasks.single.id, taskId);
+      expect(await database.select(database.localTasks).get(), hasLength(1));
+
+      final calendar = await repository.watchCalendarMonth(monday).first;
+      expect(calendar.day(monday).tasks, isEmpty);
+      expect(calendar.day(monday.add(const Duration(days: 1))).tasks, isEmpty);
+    },
+  );
+
+  test('planned and scheduled carry-over preserves original values', () async {
+    final tuesday = DateTime(2026, 9, 22);
+    final wednesday = DateTime(2026, 9, 23);
+    final plannedId = await repository.saveOneTimeReminder(
+      OneTimeReminderDraft(
+        name: '论文',
+        colorValue: 1,
+        plannedDate: tuesday,
+        deadline: TaskDeadline.dateOnly(DateTime(2026, 9, 27)),
+      ),
+    );
+    final scheduledAt = DateTime(2026, 9, 22, 20);
+    final scheduledId = await repository.saveOneTimeReminder(
+      OneTimeReminderDraft(
+        name: '小组会议',
+        colorValue: 1,
+        scheduledAt: scheduledAt,
+        deadline: TaskDeadline.dateOnly(DateTime(2026, 9, 27)),
+      ),
+    );
+
+    final tasks = await repository.watchTasksForDate(wednesday).first;
+    expect(tasks.map((task) => task.id), containsAll([plannedId, scheduledId]));
+    final planned = tasks.singleWhere((task) => task.id == plannedId);
+    final scheduled = tasks.singleWhere((task) => task.id == scheduledId);
+    expect(
+      planned.todayStatus(wednesday, now: wednesday).state,
+      OneTimeTodayState.carryOver,
+    );
+    expect(planned.plannedDate, tuesday);
+    expect(
+      scheduled.todayStatus(wednesday, now: wednesday).state,
+      OneTimeTodayState.carryOver,
+    );
+    expect(scheduled.scheduledAt, scheduledAt);
+  });
+
+  test('future availability hides task until the available day', () async {
+    final wednesday = DateTime(2026, 9, 23);
+    final taskId = await repository.saveOneTimeReminder(
+      OneTimeReminderDraft(
+        name: '实验报告',
+        colorValue: 1,
+        availableFrom: wednesday,
+      ),
+    );
+
+    expect(
+      await repository
+          .watchTasksForDate(wednesday.subtract(const Duration(days: 1)))
+          .first,
+      isEmpty,
+    );
+    expect(
+      (await repository.watchTasksForDate(wednesday).first).single.id,
+      taskId,
+    );
+  });
+
+  test(
+    'undo completion restores overdue state without moving deadline',
+    () async {
+      final due = DateTime(2026, 9, 21);
+      final later = DateTime(2026, 9, 23);
+      final taskId = await repository.saveOneTimeReminder(
+        OneTimeReminderDraft(
+          name: '逾期作业',
+          colorValue: 1,
+          availableFrom: due,
+          deadline: TaskDeadline.dateOnly(due),
+        ),
+      );
+
+      await repository.toggleOneTimeCompletion(taskId);
+      expect(await repository.watchTasksForDate(later).first, isEmpty);
+      await repository.toggleOneTimeCompletion(taskId);
+      final restored = (await repository.watchTasksForDate(later).first).single;
+      expect(
+        restored.todayStatus(later, now: later).state,
+        OneTimeTodayState.overdue,
+      );
+      expect(restored.deadline!.date, due);
+    },
+  );
 
   test('untimed completion toggles without deleting history', () async {
     final day = DateTime(2026, 9, 2);
@@ -157,6 +271,105 @@ void main() {
     final revisions = await database.select(database.taskRevisionRecords).get();
     expect(revisions, hasLength(3));
   });
+
+  test(
+    'one-time scheduling and deadline fields round-trip independently',
+    () async {
+      final initial = OneTimeReminderDraft(
+        name: '论文初稿',
+        colorValue: 0xFFE69545,
+        availableFrom: DateTime(2026, 9, 18),
+        plannedDate: DateTime(2026, 9, 19),
+        deadline: TaskDeadline.dateOnly(DateTime(2026, 9, 20)),
+        executionMode: OneTimeExecutionMode.timed,
+      );
+      final taskId = await repository.saveOneTimeReminder(initial);
+
+      var task = await repository.getTask(taskId);
+      expect(task!.availableFrom, DateTime(2026, 9, 18));
+      expect(task.plannedDate, DateTime(2026, 9, 19));
+      expect(task.scheduledAt, isNull);
+      expect(task.deadline!.date, DateTime(2026, 9, 20));
+      expect(task.deadline!.at, isNull);
+
+      await repository.saveOneTimeReminder(
+        initial.copyWith(
+          scheduledAt: DateTime(2026, 9, 19, 14, 30),
+          deadline: TaskDeadline.exact(DateTime(2026, 9, 19, 18)),
+        ),
+        taskId: taskId,
+      );
+      task = await repository.getTask(taskId);
+      expect(task!.availableFrom, DateTime(2026, 9, 18));
+      expect(task.plannedDate, DateTime(2026, 9, 19));
+      expect(task.scheduledAt, DateTime(2026, 9, 19, 14, 30));
+      expect(task.deadline!.date, isNull);
+      expect(task.deadline!.at, DateTime(2026, 9, 19, 18));
+    },
+  );
+
+  test(
+    'one-time completion preserves scheduling and deadline fields',
+    () async {
+      final taskId = await repository.saveOneTimeReminder(
+        OneTimeReminderDraft(
+          name: '申请材料',
+          colorValue: 0xFFE69545,
+          plannedDate: DateTime(2026, 9, 19),
+          deadline: TaskDeadline.dateOnly(DateTime(2026, 9, 20)),
+        ),
+      );
+
+      await repository.toggleOneTimeCompletion(taskId);
+      final completed = await repository.getTask(taskId);
+      expect(completed!.isCompleted, isTrue);
+      expect(completed.plannedDate, DateTime(2026, 9, 19));
+      expect(completed.deadline!.date, DateTime(2026, 9, 20));
+
+      await repository.toggleOneTimeCompletion(taskId);
+      final reopened = await repository.getTask(taskId);
+      expect(reopened!.isCompleted, isFalse);
+      expect(reopened.plannedDate, DateTime(2026, 9, 19));
+      expect(reopened.deadline!.date, DateTime(2026, 9, 20));
+    },
+  );
+
+  test('contradictory one-time timing fields are rejected', () async {
+    await expectLater(
+      repository.saveOneTimeReminder(
+        OneTimeReminderDraft(
+          name: '冲突事项',
+          colorValue: 1,
+          plannedDate: DateTime(2026, 9, 19),
+          scheduledAt: DateTime(2026, 9, 20, 10),
+        ),
+      ),
+      throwsArgumentError,
+    );
+    expect(await database.select(database.localTasks).get(), isEmpty);
+  });
+
+  test(
+    'calendar projects a planned one-time item on exactly one day',
+    () async {
+      final taskId = await repository.saveOneTimeReminder(
+        OneTimeReminderDraft(
+          name: '论文初稿',
+          colorValue: 1,
+          availableFrom: DateTime(2026, 9, 18),
+          plannedDate: DateTime(2026, 9, 19),
+          deadline: TaskDeadline.dateOnly(DateTime(2026, 9, 20)),
+        ),
+      );
+
+      final month = await repository
+          .watchCalendarMonth(DateTime(2026, 9))
+          .first;
+      expect(month.day(DateTime(2026, 9, 18)).tasks, isEmpty);
+      expect(month.day(DateTime(2026, 9, 19)).tasks.single.id, taskId);
+      expect(month.day(DateTime(2026, 9, 20)).tasks, isEmpty);
+    },
+  );
 
   test('archive hides task and preserves revisions', () async {
     final day = DateTime(2026, 9, 2);
@@ -619,6 +832,171 @@ void main() {
     expect(month.day(today).tasks.single.id, taskId);
     expect(month.day(today).tasks.single.isCompleted, isTrue);
   });
+
+  test(
+    'date-only reschedule clears old exact time and preserves deadline',
+    () async {
+      final base = DateTime(DateTime.now().year + 1, 5, 10);
+      final deadline = TaskDeadline.dateOnly(base.add(const Duration(days: 5)));
+      final taskId = await repository.saveOneTimeReminder(
+        OneTimeReminderDraft(
+          name: '数据库作业',
+          colorValue: 1,
+          scheduledAt: DateTime(base.year, base.month, base.day, 20),
+          plannedDate: base,
+          deadline: deadline,
+        ),
+      );
+
+      final nextDay = base.add(const Duration(days: 1));
+      await repository.planOneTimeTask(taskId, nextDay);
+      final task = await repository.getTask(taskId);
+
+      expect(task!.id, taskId);
+      expect(task.plannedDate, nextDay);
+      expect(task.scheduledAt, isNull);
+      expect(task.deadline!.date, deadline.date);
+    },
+  );
+
+  test(
+    'exact scheduling stays consistent and cancel keeps task facts',
+    () async {
+      final day = DateTime(DateTime.now().year + 1, 6, 12);
+      final taskId = await repository.saveOneTimeReminder(
+        OneTimeReminderDraft(
+          name: '实验报告',
+          colorValue: 1,
+          availableFrom: day.subtract(const Duration(days: 2)),
+          deadline: TaskDeadline.dateOnly(day.add(const Duration(days: 4))),
+          executionMode: OneTimeExecutionMode.timed,
+        ),
+      );
+      final scheduledAt = DateTime(day.year, day.month, day.day, 18, 30);
+
+      await repository.scheduleOneTimeTask(taskId, scheduledAt);
+      var task = await repository.getTask(taskId);
+      expect(task!.plannedDate, dateOnly(scheduledAt));
+      expect(task.scheduledAt, scheduledAt);
+      expect(
+        await database.select(database.reminderRuleRecords).get(),
+        isEmpty,
+      );
+
+      await repository.cancelOneTimeSchedule(taskId);
+      task = await repository.getTask(taskId);
+      expect(task!.plannedDate, isNull);
+      expect(task.scheduledAt, isNull);
+      expect(task.availableFrom, day.subtract(const Duration(days: 2)));
+      expect(task.deadline!.date, day.add(const Duration(days: 4)));
+    },
+  );
+
+  test(
+    'deadline supports both shapes and removal without 23:59 sentinel',
+    () async {
+      final day = DateTime(DateTime.now().year + 1, 7, 20);
+      final taskId = await repository.saveOneTimeReminder(
+        const OneTimeReminderDraft(name: '申请材料', colorValue: 1),
+      );
+
+      await repository.updateOneTimeDeadline(
+        taskId,
+        TaskDeadline.dateOnly(day),
+      );
+      var task = await repository.getTask(taskId);
+      expect(task!.deadline!.date, day);
+      expect(task.deadline!.at, isNull);
+
+      final exact = DateTime(day.year, day.month, day.day, 18);
+      await repository.updateOneTimeDeadline(taskId, TaskDeadline.exact(exact));
+      task = await repository.getTask(taskId);
+      expect(task!.deadline!.date, isNull);
+      expect(task.deadline!.at, exact);
+
+      await repository.updateOneTimeDeadline(
+        taskId,
+        TaskDeadline.dateOnly(day),
+      );
+      expect((await repository.getTask(taskId))!.deadline!.at, isNull);
+      await repository.updateOneTimeDeadline(taskId, null);
+      expect((await repository.getTask(taskId))!.deadline, isNull);
+    },
+  );
+
+  test(
+    'new deadline conflict and availability conflict are rejected',
+    () async {
+      final today = dateOnly(DateTime.now());
+      final planned = today.add(const Duration(days: 5));
+      final taskId = await repository.saveOneTimeReminder(
+        OneTimeReminderDraft(name: '论文答辩', colorValue: 1, plannedDate: planned),
+      );
+
+      await expectLater(
+        repository.updateOneTimeDeadline(
+          taskId,
+          TaskDeadline.dateOnly(today.add(const Duration(days: 2))),
+        ),
+        throwsArgumentError,
+      );
+      expect((await repository.getTask(taskId))!.deadline, isNull);
+      await expectLater(
+        repository.saveOneTimeReminder(
+          OneTimeReminderDraft(
+            name: '冲突日期',
+            colorValue: 1,
+            availableFrom: today.add(const Duration(days: 3)),
+            plannedDate: today.add(const Duration(days: 2)),
+          ),
+        ),
+        throwsArgumentError,
+      );
+    },
+  );
+
+  test(
+    'overdue task can be planned for recovery and remains overdue',
+    () async {
+      final today = dateOnly(DateTime.now());
+      final deadline = today.subtract(const Duration(days: 1));
+      final taskId = await repository.saveOneTimeReminder(
+        OneTimeReminderDraft(
+          name: '逾期论文',
+          colorValue: 1,
+          availableFrom: deadline.subtract(const Duration(days: 2)),
+          deadline: TaskDeadline.dateOnly(deadline),
+        ),
+      );
+
+      final tomorrow = today.add(const Duration(days: 1));
+      await repository.planOneTimeTask(taskId, tomorrow);
+      final task = await repository.getTask(taskId);
+      expect(task!.plannedDate, tomorrow);
+      expect(task.deadline!.date, deadline);
+      expect(
+        task.todayStatus(today, now: DateTime.now()).state,
+        OneTimeTodayState.overdue,
+      );
+    },
+  );
+
+  test(
+    'reschedule moves one Calendar occurrence without copying task',
+    () async {
+      final first = DateTime(DateTime.now().year + 1, 8, 10);
+      final second = first.add(const Duration(days: 1));
+      final taskId = await repository.saveOneTimeReminder(
+        OneTimeReminderDraft(name: '小组展示', colorValue: 1, plannedDate: first),
+      );
+      await repository.planOneTimeTask(taskId, second);
+
+      final month = await repository.watchCalendarMonth(first).first;
+      expect(month.day(first).tasks, isEmpty);
+      expect(month.day(second).tasks.single.id, taskId);
+      expect(await database.select(database.localTasks).get(), hasLength(1));
+    },
+  );
 }
 
 RecurringTaskDraft _untimedDraft(DateTime startsOn) {

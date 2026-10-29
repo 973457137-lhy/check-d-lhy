@@ -16,6 +16,206 @@ enum CompletionStatus { pending, completed }
 
 enum SchedulePreset { daily, weekdays, weekends, custom }
 
+enum OneTimeTodayState {
+  completed,
+  notAvailable,
+  overdue,
+  scheduledToday,
+  plannedToday,
+  carryOver,
+  pendingUnscheduled,
+  upcoming,
+  legacyUnscheduled,
+}
+
+class OneTimeTodayStatus {
+  const OneTimeTodayStatus(this.state, {this.overdueDays = 0});
+
+  final OneTimeTodayState state;
+  final int overdueDays;
+
+  bool get isVisible => switch (state) {
+    OneTimeTodayState.overdue ||
+    OneTimeTodayState.scheduledToday ||
+    OneTimeTodayState.plannedToday ||
+    OneTimeTodayState.carryOver ||
+    OneTimeTodayState.pendingUnscheduled => true,
+    _ => false,
+  };
+
+  bool get belongsInTimeline => state == OneTimeTodayState.scheduledToday;
+  bool get belongsInPending => isVisible && !belongsInTimeline;
+}
+
+class TaskDeadline {
+  const TaskDeadline._({this.date, this.at})
+    : assert((date == null) != (at == null));
+
+  factory TaskDeadline.dateOnly(DateTime value) =>
+      TaskDeadline._(date: DateTime(value.year, value.month, value.day));
+
+  factory TaskDeadline.exact(DateTime value) => TaskDeadline._(at: value);
+
+  final DateTime? date;
+  final DateTime? at;
+
+  bool get isDateOnly => date != null;
+  bool get hasTime => at != null;
+  DateTime get localDate => dateOnly(date ?? at!.toLocal());
+}
+
+abstract final class TaskTimeSemantics {
+  static DateTime? effectivePlannedDate({
+    DateTime? plannedDate,
+    DateTime? scheduledAt,
+  }) {
+    if (scheduledAt != null) return dateOnly(scheduledAt.toLocal());
+    return plannedDate == null ? null : dateOnly(plannedDate);
+  }
+
+  static bool isAvailableOn(DateTime date, {DateTime? availableFrom}) {
+    return availableFrom == null ||
+        !dateOnly(date).isBefore(dateOnly(availableFrom));
+  }
+
+  static bool isPastDeadline(DateTime now, TaskDeadline? deadline) {
+    if (deadline == null) return false;
+    if (deadline.isDateOnly) {
+      return dateOnly(now).isAfter(deadline.date!);
+    }
+    return now.toUtc().isAfter(deadline.at!.toUtc());
+  }
+
+  static OneTimeTodayStatus todayStatus({
+    required TaskDetails task,
+    required DateTime date,
+    required DateTime now,
+  }) {
+    assert(task.kind == TaskKind.oneTime);
+    final day = dateOnly(date);
+    final createdDay = dateOnly(task.createdAt.toLocal());
+    if (task.isCompleted) {
+      return const OneTimeTodayStatus(OneTimeTodayState.completed);
+    }
+    if (task.availableFrom != null &&
+        day.isBefore(dateOnly(task.availableFrom!))) {
+      return const OneTimeTodayStatus(OneTimeTodayState.notAvailable);
+    }
+    if (_isPastDeadlineOn(day, now, task.deadline)) {
+      return OneTimeTodayStatus(
+        OneTimeTodayState.overdue,
+        overdueDays: _overdueDays(day, task.deadline!),
+      );
+    }
+
+    final planned = task.effectivePlannedDate;
+    if (planned != null) {
+      final plannedDay = dateOnly(planned);
+      if (plannedDay == day) {
+        return OneTimeTodayStatus(
+          task.scheduledAt == null
+              ? OneTimeTodayState.plannedToday
+              : OneTimeTodayState.scheduledToday,
+        );
+      }
+      if (plannedDay.isBefore(day)) {
+        return const OneTimeTodayStatus(OneTimeTodayState.carryOver);
+      }
+      return const OneTimeTodayStatus(OneTimeTodayState.upcoming);
+    }
+
+    if (task.availableFrom == null && day.isBefore(createdDay)) {
+      return const OneTimeTodayStatus(OneTimeTodayState.notAvailable);
+    }
+    if (task.availableFrom != null || task.deadline != null) {
+      return const OneTimeTodayStatus(OneTimeTodayState.pendingUnscheduled);
+    }
+    if (day == createdDay) {
+      return const OneTimeTodayStatus(OneTimeTodayState.pendingUnscheduled);
+    }
+    return const OneTimeTodayStatus(OneTimeTodayState.legacyUnscheduled);
+  }
+
+  static bool _isPastDeadlineOn(
+    DateTime day,
+    DateTime now,
+    TaskDeadline? deadline,
+  ) {
+    if (deadline == null) return false;
+    if (deadline.isDateOnly) return day.isAfter(deadline.date!);
+
+    final dueAt = deadline.at!;
+    final dueDay = dateOnly(dueAt.toLocal());
+    if (day.isBefore(dueDay)) return false;
+    if (day.isAfter(dueDay)) return true;
+    final today = dateOnly(now.toLocal());
+    if (day == today) return now.toUtc().isAfter(dueAt.toUtc());
+    return day.isBefore(today);
+  }
+
+  static int _overdueDays(DateTime day, TaskDeadline deadline) {
+    final dueDay = deadline.localDate;
+    return day.difference(dueDay).inDays.clamp(0, 1 << 31);
+  }
+
+  static void validate({
+    DateTime? availableFrom,
+    DateTime? plannedDate,
+    DateTime? scheduledAt,
+    TaskDeadline? deadline,
+    bool allowPlanAfterDeadline = false,
+  }) {
+    final normalizedPlanned = plannedDate == null
+        ? null
+        : dateOnly(plannedDate);
+    final scheduledDate = scheduledAt == null
+        ? null
+        : dateOnly(scheduledAt.toLocal());
+    if (normalizedPlanned != null &&
+        scheduledDate != null &&
+        normalizedPlanned != scheduledDate) {
+      throw ArgumentError('计划日期必须与具体时间为同一天。');
+    }
+    if (availableFrom != null &&
+        normalizedPlanned != null &&
+        normalizedPlanned.isBefore(dateOnly(availableFrom))) {
+      throw ArgumentError('计划日期不能早于可开始日期。');
+    }
+    if (deadline == null) return;
+
+    final deadlineDate = deadline.localDate;
+    if (availableFrom != null &&
+        dateOnly(availableFrom).isAfter(deadlineDate)) {
+      throw ArgumentError('可开始日期不能晚于截止日期。');
+    }
+    if (!allowPlanAfterDeadline &&
+        normalizedPlanned != null &&
+        normalizedPlanned.isAfter(deadlineDate)) {
+      throw ArgumentError('当前计划时间晚于截止时间，请先调整计划时间。');
+    }
+    if (!allowPlanAfterDeadline && scheduledAt != null) {
+      final exceedsDeadline = deadline.isDateOnly
+          ? scheduledDate!.isAfter(deadlineDate)
+          : scheduledAt.toUtc().isAfter(deadline.at!.toUtc());
+      if (exceedsDeadline) {
+        throw ArgumentError('当前计划时间晚于截止时间，请先调整计划时间。');
+      }
+    }
+  }
+
+  static bool sameDeadline(TaskDeadline? first, TaskDeadline? second) {
+    if (identical(first, second)) return true;
+    if (first == null ||
+        second == null ||
+        first.isDateOnly != second.isDateOnly) {
+      return false;
+    }
+    return first.isDateOnly
+        ? first.date == second.date
+        : first.at!.toUtc() == second.at!.toUtc();
+  }
+}
+
 abstract final class WeekdayMask {
   static const everyDay = 0x7F;
   static const weekdays = 0x1F;
@@ -102,19 +302,88 @@ class OneTimeReminderDraft {
     required this.colorValue,
     this.iconName = 'event',
     this.scheduledAt,
+    this.availableFrom,
+    this.plannedDate,
+    this.deadline,
     this.executionMode = OneTimeExecutionMode.untimed,
     this.remindBeforeMinutes,
     this.notes,
   });
 
+  factory OneTimeReminderDraft.fromTask(TaskDetails task) {
+    if (task.kind != TaskKind.oneTime) {
+      throw ArgumentError('只能从单次事项创建编辑草稿。');
+    }
+    return OneTimeReminderDraft(
+      tagId: task.tagId,
+      name: task.name,
+      colorValue: task.colorValue,
+      iconName: task.iconName,
+      scheduledAt: task.scheduledAt,
+      availableFrom: task.availableFrom,
+      plannedDate: task.plannedDate,
+      deadline: task.deadline,
+      executionMode: task.oneTimeExecutionMode ?? OneTimeExecutionMode.untimed,
+      remindBeforeMinutes: task.remindBeforeMinutes,
+      notes: task.notes,
+    );
+  }
+
   final String name;
   final int colorValue;
   final String iconName;
   final DateTime? scheduledAt;
+  final DateTime? availableFrom;
+  final DateTime? plannedDate;
+  final TaskDeadline? deadline;
   final OneTimeExecutionMode executionMode;
   final int? remindBeforeMinutes;
   final String? notes;
+
+  OneTimeReminderDraft copyWith({
+    Object? tagId = _unchangedTaskField,
+    String? name,
+    int? colorValue,
+    String? iconName,
+    Object? scheduledAt = _unchangedTaskField,
+    Object? availableFrom = _unchangedTaskField,
+    Object? plannedDate = _unchangedTaskField,
+    Object? deadline = _unchangedTaskField,
+    OneTimeExecutionMode? executionMode,
+    Object? remindBeforeMinutes = _unchangedTaskField,
+    Object? notes = _unchangedTaskField,
+  }) {
+    return OneTimeReminderDraft(
+      tagId: identical(tagId, _unchangedTaskField)
+          ? this.tagId
+          : tagId as String?,
+      name: name ?? this.name,
+      colorValue: colorValue ?? this.colorValue,
+      iconName: iconName ?? this.iconName,
+      scheduledAt: identical(scheduledAt, _unchangedTaskField)
+          ? this.scheduledAt
+          : scheduledAt as DateTime?,
+      availableFrom: identical(availableFrom, _unchangedTaskField)
+          ? this.availableFrom
+          : availableFrom as DateTime?,
+      plannedDate: identical(plannedDate, _unchangedTaskField)
+          ? this.plannedDate
+          : plannedDate as DateTime?,
+      deadline: identical(deadline, _unchangedTaskField)
+          ? this.deadline
+          : deadline as TaskDeadline?,
+      executionMode: executionMode ?? this.executionMode,
+      remindBeforeMinutes: identical(remindBeforeMinutes, _unchangedTaskField)
+          ? this.remindBeforeMinutes
+          : remindBeforeMinutes as int?,
+      notes: identical(notes, _unchangedTaskField)
+          ? this.notes
+          : notes as String?,
+    );
+  }
 }
+
+const Object _unchangedTaskField = Object();
 
 class TaskDetails {
   final String? tagId;
@@ -137,6 +406,9 @@ class TaskDetails {
     this.reminderMinuteOfDay,
     this.schedule,
     this.scheduledAt,
+    this.availableFrom,
+    this.plannedDate,
+    this.deadline,
     this.remindBeforeMinutes,
     this.oneTimeExecutionMode,
     this.oneTimeCompletedAt,
@@ -163,6 +435,9 @@ class TaskDetails {
   final int? reminderMinuteOfDay;
   final TaskScheduleRule? schedule;
   final DateTime? scheduledAt;
+  final DateTime? availableFrom;
+  final DateTime? plannedDate;
+  final TaskDeadline? deadline;
   final int? remindBeforeMinutes;
   final OneTimeExecutionMode? oneTimeExecutionMode;
   final DateTime? oneTimeCompletedAt;
@@ -176,6 +451,23 @@ class TaskDetails {
       oneTimeExecutionMode == OneTimeExecutionMode.timed;
 
   bool get hasDurationTarget => targetDurationSeconds != null;
+
+  DateTime? get effectivePlannedDate => TaskTimeSemantics.effectivePlannedDate(
+    plannedDate: plannedDate,
+    scheduledAt: scheduledAt,
+  );
+
+  bool get hasDeadline => deadline != null;
+  bool get deadlineIsDateOnly => deadline?.isDateOnly ?? false;
+
+  bool isAvailableOn(DateTime date) =>
+      TaskTimeSemantics.isAvailableOn(date, availableFrom: availableFrom);
+
+  bool isPastDeadline(DateTime now) =>
+      TaskTimeSemantics.isPastDeadline(now, deadline);
+
+  OneTimeTodayStatus todayStatus(DateTime date, {required DateTime now}) =>
+      TaskTimeSemantics.todayStatus(task: this, date: date, now: now);
 
   bool get isCompleted =>
       kind == TaskKind.oneTime ? oneTimeCompletedAt != null : todayCompleted;

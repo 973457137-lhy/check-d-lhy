@@ -7,6 +7,9 @@ TaskDetails _oneOff({
   required String id,
   required DateTime createdAt,
   DateTime? scheduledAt,
+  DateTime? availableFrom,
+  DateTime? plannedDate,
+  TaskDeadline? deadline,
   DateTime? completedAt,
 }) => TaskDetails(
   id: id,
@@ -17,6 +20,9 @@ TaskDetails _oneOff({
   createdAt: createdAt,
   updatedAt: createdAt,
   scheduledAt: scheduledAt,
+  availableFrom: availableFrom,
+  plannedDate: plannedDate,
+  deadline: deadline,
   oneTimeExecutionMode: OneTimeExecutionMode.timed,
   oneTimeCompletedAt: completedAt,
 );
@@ -62,12 +68,37 @@ void main() {
     expect(_for(sep20, [item]), isEmpty);
   });
 
-  test('untimed one-off item belongs only to its creation date', () {
+  test('unplanned one-off item is not projected into Calendar', () {
     final item = _oneOff(id: 'untimed-one-off', createdAt: sep18);
 
-    final occurrence = _for(sep18, [item]);
+    expect(_for(sep18, [item]), isEmpty);
+    expect(_for(sep19, [item]), isEmpty);
+    expect(_for(sep20, [item]), isEmpty);
+  });
+
+  test('planned one-off item appears once without an exact time', () {
+    final item = _oneOff(
+      id: 'planned-one-off',
+      createdAt: sep18,
+      plannedDate: sep19,
+    );
+
+    expect(_for(sep18, [item]), isEmpty);
+    final occurrence = _for(sep19, [item]);
     expect(occurrence, hasLength(1));
     expect(occurrence.single.hasTime, isFalse);
+    expect(_for(sep20, [item]), isEmpty);
+  });
+
+  test('availability and deadline do not create calendar occurrences', () {
+    final item = _oneOff(
+      id: 'bounded-one-off',
+      createdAt: sep18,
+      availableFrom: sep18,
+      deadline: TaskDeadline.dateOnly(sep20),
+    );
+
+    expect(_for(sep18, [item]), isEmpty);
     expect(_for(sep19, [item]), isEmpty);
     expect(_for(sep20, [item]), isEmpty);
   });
@@ -76,6 +107,7 @@ void main() {
     final item = _oneOff(
       id: 'completed-one-off',
       createdAt: sep18,
+      plannedDate: sep18,
       completedAt: DateTime(2026, 9, 18, 18),
     );
 

@@ -6,6 +6,7 @@ import '../../../shared/widgets/mascot.dart';
 import '../../courses/presentation/schedule_template_page.dart';
 import '../../courses/presentation/semester_settings_page.dart';
 import '../../tags/presentation/tags_page.dart';
+import 'account_sync_page.dart';
 import 'reminder_settings_page.dart';
 
 class MyPage extends StatelessWidget {
@@ -171,14 +172,21 @@ class _MyMobileSettings extends StatelessWidget {
       _MySection(
         title: '数据',
         tone: AppColors.mint,
-        children: const [
+        children: [
           _MyTile(
+            icon: CheckDIconType.backup,
+            color: AppColors.accentMint,
+            title: '账号与同步',
+            subtitle: '查看云同步状态与本机数据',
+            onTap: () => onOpen(context, const AccountSyncPage()),
+          ),
+          const _MyTile(
             icon: CheckDIconType.backup,
             color: AppColors.accentMint,
             title: '数据备份',
             subtitle: '查看备份与同步状态',
           ),
-          _MyTile(
+          const _MyTile(
             icon: CheckDIconType.privacy,
             color: AppColors.accentMint,
             title: '数据与隐私',
@@ -267,7 +275,7 @@ class _MyDesktopSettings extends StatelessWidget {
       Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Expanded(child: _dataSection()),
+          Expanded(child: _dataSection(context)),
           const SizedBox(width: 18),
           Expanded(child: _otherSection()),
         ],
@@ -335,17 +343,24 @@ class _MyDesktopSettings extends StatelessWidget {
     ],
   );
 
-  Widget _dataSection() => _MySection(
+  Widget _dataSection(BuildContext context) => _MySection(
     title: '数据',
     tone: AppColors.mint,
-    children: const [
+    children: [
       _MyTile(
+        icon: CheckDIconType.backup,
+        color: AppColors.accentMint,
+        title: '账号与同步',
+        subtitle: '查看云同步状态与本机数据',
+        onTap: () => onOpen(context, const AccountSyncPage()),
+      ),
+      const _MyTile(
         icon: CheckDIconType.backup,
         color: AppColors.accentMint,
         title: '数据备份',
         subtitle: '查看备份与同步状态',
       ),
-      _MyTile(
+      const _MyTile(
         icon: CheckDIconType.privacy,
         color: AppColors.accentMint,
         title: '数据与隐私',

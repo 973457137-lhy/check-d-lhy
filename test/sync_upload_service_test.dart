@@ -1,11 +1,14 @@
+import 'dart:convert';
+
 import 'package:check_d/core/database/app_database.dart';
 import 'package:check_d/core/sync/sync_queue_service.dart';
 import 'package:check_d/core/sync/sync_upload_service.dart';
 import 'package:check_d/features/tasks/data/task_repository.dart';
 import 'package:check_d/features/tasks/domain/task_models.dart';
-import 'package:drift/drift.dart' hide isNotNull;
+import 'package:drift/drift.dart' hide isNotNull, isNull;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 void main() {
   const userId = 'user-1';
@@ -48,8 +51,16 @@ void main() {
       completion('completed'),
     );
     expect(remote.value('tasks', taskId)?['user_id'], userId);
+    final taskPayload = remote.value('tasks', taskId)!;
+    expect(taskPayload, isNot(contains('pending')));
+    expect(taskPayload, isNot(contains('carry_over')));
+    expect(taskPayload, isNot(contains('overdue')));
     expect(remote.value('long_term_tasks', taskId)?['task_id'], taskId);
-    expect(remote.value('task_schedules', taskId)?['task_id'], taskId);
+    final schedulePayload = remote.value('task_schedules', taskId)!;
+    expect(schedulePayload['task_id'], taskId);
+    expect(schedulePayload['weekdays'], isA<List<int>>());
+    expect(schedulePayload['weekdays'], <int>[1, 2, 3, 4, 5, 6, 7]);
+    expect(() => jsonEncode(schedulePayload), returnsNormally);
   });
 
   test(
@@ -147,6 +158,124 @@ void main() {
       containsAll(<String>[first, second]),
     );
   });
+
+  test(
+    'one-time upload keeps date-only and exact deadline shapes distinct',
+    () async {
+      final dateOnlyId = await tasks.saveOneTimeReminder(
+        OneTimeReminderDraft(
+          name: '日期截止',
+          colorValue: 1,
+          availableFrom: DateTime(2026, 9, 18),
+          plannedDate: DateTime(2026, 9, 19),
+          deadline: TaskDeadline.dateOnly(DateTime(2026, 9, 20)),
+        ),
+      );
+      final exactId = await tasks.saveOneTimeReminder(
+        OneTimeReminderDraft(
+          name: '精确截止',
+          colorValue: 1,
+          scheduledAt: DateTime(2026, 9, 19, 14),
+          deadline: TaskDeadline.exact(DateTime(2026, 9, 19, 18)),
+        ),
+      );
+
+      expect((await executor.flush()).failed, 0);
+      final dateOnly = remote.value('one_time_reminders', dateOnlyId)!;
+      expect(dateOnly['available_from'], '2026-09-18');
+      expect(dateOnly['planned_date'], '2026-09-19');
+      expect(dateOnly['due_date'], '2026-09-20');
+      expect(dateOnly['due_at'], isNull);
+      final exact = remote.value('one_time_reminders', exactId)!;
+      expect(exact['due_date'], isNull);
+      expect(exact['due_at'], isNotNull);
+    },
+  );
+
+  test('second task write records long-term table and SQLSTATE', () async {
+    final taskId = await tasks.saveRecurringTask(_timedDraft('第二步失败'));
+    remote.failures['long_term_tasks'] = const PostgrestException(
+      message: 'sensitive database detail',
+      code: '23514',
+      details: 'must not be persisted',
+    );
+
+    final result = await executor.flush();
+    final operation = await operationFor(database, 'tasks', taskId, userId);
+    final diagnostic =
+        (await queue.watchFailureDiagnosticsForUser(userId).first).single;
+
+    expect(result.failed, 1);
+    expect(remote.value('tasks', taskId), isNotNull);
+    expect(remote.value('long_term_tasks', taskId), isNull);
+    expect(diagnostic.failureStage, 'upsert');
+    expect(diagnostic.failureTable, 'long_term_tasks');
+    expect(diagnostic.errorCode, '23514');
+    expect(diagnostic.errorCategory, '上传数据不符合云端约束');
+    expect(operation.lastError, isNot(contains('sensitive database detail')));
+    expect(operation.lastError, isNot(contains('must not be persisted')));
+  });
+
+  test('third task write records schedule table and SQLSTATE', () async {
+    final taskId = await tasks.saveRecurringTask(_timedDraft('第三步失败'));
+    remote.failures['task_schedules'] = const PostgrestException(
+      message: 'foreign key detail',
+      code: '23503',
+    );
+
+    final result = await executor.flush();
+    final diagnostic =
+        (await queue.watchFailureDiagnosticsForUser(userId).first).single;
+
+    expect(result.failed, 1);
+    expect(remote.value('tasks', taskId), isNotNull);
+    expect(remote.value('long_term_tasks', taskId), isNotNull);
+    expect(remote.value('task_schedules', taskId), isNull);
+    expect(diagnostic.failureStage, 'upsert');
+    expect(diagnostic.failureTable, 'task_schedules');
+    expect(diagnostic.errorCode, '23503');
+    expect(diagnostic.errorCategory, '云端关联数据缺失');
+  });
+
+  test('JSON serialization failures are safely classified', () async {
+    final taskId = await tasks.saveRecurringTask(_timedDraft('序列化失败'));
+    remote.failures['task_schedules'] = JsonUnsupportedObjectError(<int>{1});
+
+    final result = await executor.flush();
+    final operation = await operationFor(database, 'tasks', taskId, userId);
+    final diagnostic =
+        (await queue.watchFailureDiagnosticsForUser(userId).first).single;
+
+    expect(result.failed, 1);
+    expect(diagnostic.failureStage, 'upsert');
+    expect(diagnostic.failureTable, 'task_schedules');
+    expect(diagnostic.errorCode, isNull);
+    expect(diagnostic.errorCategory, '同步数据序列化失败');
+    expect(operation.lastError, isNot(contains('序列化失败')));
+    expect(operation.lastError, isNot(contains('{1}')));
+  });
+
+  test('one-time child failure records its exact table', () async {
+    final taskId = await tasks.saveOneTimeReminder(
+      const OneTimeReminderDraft(name: '单次失败', colorValue: 1),
+    );
+    remote.failures['one_time_reminders'] = const PostgrestException(
+      message: 'missing required value',
+      code: '23502',
+    );
+
+    final result = await executor.flush();
+    final diagnostic =
+        (await queue.watchFailureDiagnosticsForUser(userId).first).single;
+
+    expect(result.failed, 1);
+    expect(remote.value('tasks', taskId), isNotNull);
+    expect(remote.value('one_time_reminders', taskId), isNull);
+    expect(diagnostic.failureStage, 'upsert');
+    expect(diagnostic.failureTable, 'one_time_reminders');
+    expect(diagnostic.errorCode, '23502');
+    expect(diagnostic.errorCategory, '云端必填字段缺失');
+  });
 }
 
 Future<SyncOperation> operationFor(
@@ -196,6 +325,7 @@ RecurringTaskDraft _timedDraft(String name) => RecurringTaskDraft(
 class _FakeRemoteStore implements SyncRemoteStore {
   final List<_Upsert> upserts = [];
   final Set<String> failTables = {};
+  final Map<String, Object> failures = {};
   final Map<String, Map<String, Object?>> _rows = {};
 
   @override
@@ -204,6 +334,9 @@ class _FakeRemoteStore implements SyncRemoteStore {
     Map<String, Object?> values, {
     required String onConflict,
   }) async {
+    jsonEncode(values);
+    final failure = failures[table];
+    if (failure != null) throw failure;
     if (failTables.contains(table)) throw StateError('offline: $table');
     final copy = Map<String, Object?>.from(values);
     upserts.add(_Upsert(table, copy));

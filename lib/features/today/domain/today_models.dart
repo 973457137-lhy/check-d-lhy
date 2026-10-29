@@ -9,12 +9,14 @@ class TodaySnapshot {
     required this.tasks,
     required this.courses,
     required this.overrides,
+    required this.now,
   });
 
   final DateTime date;
   final List<TaskDetails> tasks;
   final List<TodayCourseItem> courses;
   final List<DailyItemOverride> overrides;
+  final DateTime now;
 
   List<TaskDetails> get recurringTasks =>
       tasks.where((task) => task.kind == TaskKind.recurring).toList();
@@ -26,8 +28,9 @@ class TodaySnapshot {
     ...courses,
     ...tasks
         .where(
-          (task) =>
-              task.scheduledMinuteOfDay != null || task.scheduledAt != null,
+          (task) => task.kind == TaskKind.recurring
+              ? task.scheduledMinuteOfDay != null
+              : task.todayStatus(date, now: now).belongsInTimeline,
         )
         .map(TodayTaskItem.new),
   ]..sort((a, b) => a.startMinute.compareTo(b.startMinute));
