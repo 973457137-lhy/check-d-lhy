@@ -35,9 +35,9 @@ M2 能为其中两项提供确定性依据：
 | # | 条目 | 触发条件 | 当前判定 | 证据 / 说明 |
 |---|---|---|---|---|
 | 1 | Proposal/Approval 状态机 | proposal 与审批两个子状态机组合 | 静态结论：§5.7 有 Proposal 8 态图，但缺 5 处 | Approval 无迁移图、`applying` 无出边到 expired、`readback_pending` 无出边、`failed` 后不可重试、无 Proposal×Approval 组合表 → 详见状态机复审文档 G1–G5 |
-| 2 | `readback_pending` | 写入成功但回读尚未确认 | **M0 已决定**：`applying`/`readback_pending` 下任何新幂等键一律返回 `READBACK_PENDING` 且零写入 | 决定见 `reports/revision-2026-10-31-m0-decisions.md` 五·2；**待契约文本落地后复核**。Mock 侧仍是 daily_override 一条没回读却标 `readback_verified: true` |
+| 2 | `readback_pending` | 写入成功但回读尚未确认 | **M0 已决定**：`applying`/`readback_pending` 下任何新幂等键一律返回 `READBACK_PENDING` 且零写入 | 决定见 `reports/revision-2026-10-31-m0-decisions.md` 五·2；**待契约文本落地后复核**；M2 已给出可直接实现的判定顺序（`reports/revision-2026-10-31-round3.md` §1）。Mock 侧仍是 daily_override 一条没回读却标 `readback_verified: true` |
 | 3 | `PROPOSAL_EXPIRED` | 提案超过 `expires_at` | 契约层可达 | §6.5 / §6.7 判定顺序第 3 步；前提是服务端**惰性置位**：任何读取路径发现过期即视为 expired，不依赖定时任务 |
-| 4 | `APPROVAL_EXPIRED` | 审批超过有效期 | **M0 已决定**：Token 过期后旧审批终结；Proposal 仍有效时允许重建 `approval_id` → 死锁解除 | 决定见 `reports/revision-2026-10-31-m0-decisions.md` 五·1；**待契约文本落地后复核** |
+| 4 | `APPROVAL_EXPIRED` | 审批超过有效期 | **M0 已决定**：Token 过期后旧审批终结；Proposal 仍有效时允许重建 `approval_id` → 死锁解除 | 决定见 `reports/revision-2026-10-31-m0-decisions.md` 五·1；**待契约文本落地后复核**；M2 给出「未终结审批」集合建议（round3 报告 §2） |
 | 5 | `ALREADY_APPLIED` | 同一提案重复 apply | **契约层可达；M1 mock 不可达属实现缺陷** | §6.7 已写死判定顺序：幂等记录 → 是否已 applied → TTL → base_version → Token。C 上轮的发现在这里已闭环 |
 | 6 | `APPROVAL_CONSUMED` | token 被二次使用 | 契约层可达 | §6.7「Token 已消费且不存在相同幂等记录时返回」，顺序正确就不会被 `ALREADY_APPLIED` 抢先 |
 | 7 | daily override 回读 | `upsert_daily_override` 写后再读回比对 | 条款明确 + M2 侧新增字段守卫 | §6.7 七个必核字段；**缺「唯一键下有效记录数恰为 1」断言**；M2 侧已保证字段齐全（新用例） |
@@ -48,7 +48,7 @@ M2 能为其中两项提供确定性依据：
 | 12 | 单次事项旧 `scheduled_at` | 省略/保留现值跨日造成假成功 | **M2 侧已自有证据** | M2 永远显式给同本地日 `scheduled_at`，从不走"保留现值"分支（本轮新用例）；剩余风险只落在 `base_version` 侧 |
 | 13 | 单日例外唯一键 | `user+item_type+item_id+local_date` 重复 | 条款明确；M2 侧提案内唯一 | §5.7 冲突 → `SNAPSHOT_CONFLICT` 零写入；M2 保证同一提案不重复，服务端只会被**并发**触发而非被提案自身触发 |
 | 14 | `READBACK_MISMATCH` | 写后回读与批准内容不一致 | 静态结论：契约已与 `READBACK_PENDING` 分列 | §4.1：前者 502（**已确认不一致**），后者 503（**未知是否写入**）。两者不得互换，也不得合并成一个码——合并会把"不知道"和"知道错了"混成同一条证据 |
-| 16 | `input_digest` 覆盖范围 | 是否含 horizon 起止与时区 | **M0 已决定要含**；M2 侧补了可执行证据：只改 `horizonEnd` 输出就不同（用例 `horizon 起止会改变输出`） | 时区仍 BLOCKED：M2 不做时区转换，只能由服务端纳入规范化 |
+| 16 | `input_digest` 覆盖范围 | 是否含 horizon 起止与时区 | **M0 已决定要含**；M2 侧补了两条可执行证据：只改 `horizonEnd` 输出就不同（`horizon 起止会改变输出`）；只换时区标签输出逐字节相同（`时区标签不改变 M2 输出，故 input_digest 必须由服务端纳入时区`） | 时区仍 BLOCKED：M2 不做时区转换，只能由服务端纳入规范化 |
 
 | 15 | `PROPOSAL_NOT_APPROVABLE` | 对非 `pending_approval` 的 Proposal 请求审批 | **契约尚未采用**（@2c48579 全文 0 次） | 属 M1 提议。B 的增量判断与可达测试输入见 `reviews/proposal-not-approvable-incremental.md`；**未写入 Schema**，也未加入 M2 任何 DTO |
 
@@ -68,6 +68,9 @@ M2 能为其中两项提供确定性依据：
 | block 不跨本地日 | 从源头消解一类 `BLOCK_TIME_INVALID` | `确定性与边界 · 排出来的块不跨自然日` |
 | `reason_code` 封闭枚举 | 「数据」判定项取值有限，C 可穷举校验 | `冻结目标守卫 · reason_code 取值必须落在封闭枚举内` |
 | `explanations` 元素恒为 `{code, message, related_task_ids?}` | 结构形状不会在合并时炸掉 | `冻结目标守卫 · explanations 元素结构统一` |
+| `explanations[].code` 全部落在 v1 公共枚举内；repair 专用码不外泄 | 枚举合规，服务端可直接序列化 `publicExplanations` | `冻结目标守卫 · explanations 码必须落在 v1 公共枚举内`；全量映射见 `explanations-code-map.md` |
+| `remaining_minutes_today` 三态语义（null / 0 / 正数） | null 按完整目标、0 不排不进兜底、正数折算且标 task_target | `冻结目标守卫 · B19：remaining_minutes_today 三态语义` |
+| 内部调度 DTO 递归不含任何服务端字段 | 方案 A 下 M2 不伪造 `proposal_id`/`snapshot_ref`/`input_digest`/`generated_at`/`expires_at` | `冻结目标守卫 · 内部调度 DTO 递归不含任何服务端字段` |
 | 时长第三级兜底恒为 `max(minimum_block_minutes, 30)`，且必标 `scheduler_estimate` | 既无任务目标也无快照估算时不会静默丢弃任务；估算也**不会**被误标成 `task_target` | `冻结目标守卫 · 时长兜底为 max(minimum_block_minutes, 30)，且一律算估算` |
 | `schedule_one_time` 必带同本地日 `scheduled_at` | 消除「写入成功但计划日期仍来自旧值」的假成功路径 | `冻结目标守卫 · 单次事项必须显式带与 planned_date 同日的 scheduled_at` |
 | `upsert_daily_override` 七字段齐全 + `0 <= start < 1440 < end <= 1440` + `item_type` 不含 course + `existing_override_id` 恒 null | 服务端回读不会因为提案侧缺字段而失败；也不靠猜 override id 制造重复记录 | `冻结目标守卫 · 单日例外变更字段齐全、分钟合法，且同一唯一键在提案内只出现一次` |

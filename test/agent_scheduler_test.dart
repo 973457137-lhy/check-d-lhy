@@ -912,6 +912,131 @@ void main() {
       expect(generateSchedule(input).blocks.single.startAt, _at(0, 9));
     });
 
+    test('B19：remaining_minutes_today 三态语义（null / 0 / 正数）', () {
+      ScheduleInput build(int? remaining) => ScheduleInput(
+            now: _at(0, 8),
+            horizonStart: _at(0, 8),
+            horizonEnd: _at(0, 22),
+            baseVersion: 'v1',
+            availability: [
+              ScheduleWindow(startAt: _at(0, 9), endAt: _at(0, 22)),
+            ],
+            demands: [
+              ScheduleTaskDemand(
+                taskId: 'recurring-three-state',
+                title: '每日练琴',
+                requiredMinutes: 120,
+                targetDurationSeconds: 7200,
+                remainingMinutesToday: remaining,
+                taskKind: ScheduleTaskKind.recurring,
+              ),
+            ],
+          );
+
+      // null：没有当日口径，按完整目标 120 分钟排，标 task_target。
+      final asNull = generateSchedule(build(null));
+      expect(asNull.blocks.single.minutes, 120);
+      expect(asNull.blocks.single.durationSource, 'task_target');
+
+      // 0：当天已做完 —— 不排、不计未安排、产出 ALREADY_DONE_TODAY。
+      final asZero = generateSchedule(build(0));
+      expect(asZero.blocks, isEmpty);
+      expect(asZero.unplannedTasks, isEmpty);
+      expect(asZero.notes.map((note) => note.code), contains('ALREADY_DONE_TODAY'));
+
+      // 正数：当日剩余就是本次要排的量，完整目标 120 被折算为 40。
+      final asForty = generateSchedule(build(40));
+      expect(asForty.blocks.single.minutes, 40);
+      expect(asForty.blocks.single.durationSource, 'task_target');
+
+      // 三态都排在第三级兜底之前：绝不退化成 30 分钟兜底，也不标估算。
+      for (final proposal in <ScheduleProposal>[asNull, asZero, asForty]) {
+        final codes = proposal.notes.map((note) => note.code).toList();
+        expect(codes, isNot(contains('ESTIMATED_DURATION')));
+      }
+    });
+
+    test('时区标签不改变 M2 输出，故 input_digest 必须由服务端纳入时区', () {
+      ScheduleInput build(String timezone) => ScheduleInput(
+            now: _at(0, 8),
+            horizonStart: _at(0, 8),
+            horizonEnd: _at(0, 22),
+            baseVersion: 'v1',
+            timezone: timezone,
+            availability: [
+              ScheduleWindow(startAt: _at(0, 9), endAt: _at(0, 12)),
+            ],
+            demands: [
+              ScheduleTaskDemand(
+                taskId: 'tz-digest',
+                title: '时区摘要用例',
+                requiredMinutes: 30,
+              ),
+            ],
+          );
+
+      final shanghai = generateSchedule(build('Asia/Shanghai'));
+      final utc = generateSchedule(build('UTC'));
+
+      // M2 完全无视时区标签：两个不同时区拿到逐字节相同的排程。
+      expect(jsonEncode(shanghai.toJson()), jsonEncode(utc.toJson()));
+
+      // 这正是摘要必须含时区的原因：M2 不区分，服务端若也不区分，
+      // 两个不同时区（同一墙上时间）的提案会共享同一份 input_digest。
+      expect(shanghai.blocks.single.startAt, _at(0, 9));
+    });
+
+    test('内部调度 DTO 递归不含任何服务端字段', () {
+      final input = ScheduleInput(
+        now: _at(0, 8),
+        horizonStart: _at(0, 8),
+        horizonEnd: _at(0, 22),
+        baseVersion: 'v1',
+        availability: [
+          ScheduleWindow(startAt: _at(0, 9), endAt: _at(0, 10)),
+        ],
+        demands: [
+          ScheduleTaskDemand(
+            taskId: 'internal-dto',
+            title: '内部 DTO 用例',
+            requiredMinutes: 60,
+            taskKind: ScheduleTaskKind.recurring,
+          ),
+        ],
+      );
+
+      final proposal = generateSchedule(input);
+      const serverFields = <String>{
+        'proposal_id',
+        'snapshot_ref',
+        'input_digest',
+        'generated_at',
+        'expires_at',
+      };
+
+      void walk(Object? node) {
+        if (node is Map) {
+          for (final entry in node.entries) {
+            expect(
+              serverFields,
+              isNot(contains(entry.key)),
+              reason: '${entry.key} 是服务端字段，方案 A 下不得出现在 M2 输出里',
+            );
+            walk(entry.value);
+          }
+        } else if (node is List) {
+          for (final value in node) {
+            walk(value);
+          }
+        }
+      }
+
+      walk(jsonDecode(jsonEncode(proposal.toJson())));
+
+      // base_version 只允许是服务端给定值的原样带回，M2 不生成也不改写。
+      expect(proposal.baseVersion, input.baseVersion);
+    });
+
     test('explanations 码必须落在 v1 公共枚举内，repair 专用码不得外泄', () {
       final input = ScheduleInput(
         now: _at(0, 8),
