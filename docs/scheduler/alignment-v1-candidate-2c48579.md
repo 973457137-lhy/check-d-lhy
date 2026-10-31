@@ -7,14 +7,30 @@
 > **纪律：不修改 M0 契约本体；不扩大业务实现；不宣称 WorkBuddy 或真实审批已经可用；
 > 本轮不新增任何功能。**
 
-## 零、先说一件必须请队长确认的事
+## 零、状态：这是**预对齐**，不是最终对齐
+
+队长 2026-10-31 @所有人已说明：「M0 已完成 v1 CANDIDATE 最终决策收口（7 工具、
+`static_bearer_demo`、30 分钟 Proposal、5 分钟一次性 Token、无持久化 skip、统一状态机及错误码），
+**当前修改仍在 M0 本地，待队长本人提交并发布固定 SHA**；PR #2、PR #3 暂不合并。」
+
+所以本文的定位是：
+
+- **收发口决策、锁定措辞、撤回我的过期建议** —— 这些现在就能做，且不依赖 SHA；
+- **真正的契约对齐，要在固定 SHA 发布后重做一次**，届时只看增量，流程与判据见
+  `docs/scheduler/incremental-checklist-next-sha.md`，配 `docs/scheduler/tools/contract-diff-check.sh` 一条命令出 diff。
 
 我 `git fetch upstream` 后，`upstream/feat/m0-api-contract` 的 HEAD **仍然是 `2c48579`**，
-没有出现新的"固定 commit SHA"。因此本轮对齐以 `2c48579` 为对象——它是我手上唯一能拿到的、
+尚未出现固定 SHA。因此本轮对齐以 `2c48579` 为对象——它是我手上唯一能拿到的、
 内容与指令 1–8、10 各条完全吻合的提交。
 
-> **如果 M0 的"固定 SHA"另有其人（例如 PR #4 合入 main 后的 squash 版本），请发 SHA，
-> 我会按新 SHA 再做一次对齐，不会把这次的结论当作已对齐。**
+> **收到固定 SHA 时，请发给我，我会按新 SHA 重跑一次增量检查，不会把这次的结论当作已对齐。**
+
+本轮同时记录两个外部事实（不影响我上面的任何结论）：
+
+- A 的 PR #3 HEAD 现在是 **`e7be8c9`**，队长的说法是"已完成 B/C 第一轮修复并有 26/26 Mock 证据，
+  但仍需按新 M0 SHA 做最后一次增量对齐"。**我不重跑也不重评 PR #3**（属 M1 侧，队长明确待新 SHA）。
+- **两个 26/26 不是一回事**：M1 的 26/26 是 Mock 用例数，M2 的 28/28 是纯函数用例数，
+  两者不可比。汇报时不要串成一个数字。
 
 另外：**指令第 9 项的 `PROPOSAL_NOT_APPROVABLE` 在 `2c48579` 里一次都没出现**（全文匹配 0 次），
 §4.1 的错误码表仍是 20 个码。所以它当前确实是"M1 提议、M0 未采用"的状态，我按指令
@@ -52,9 +68,12 @@
 | `docs/scheduler/reviews/proposal-not-approvable-incremental.md` | 新增：第 9 项的 B 侧增量判断 + 独立可达测试输入（不写 Schema） |
 | `docs/scheduler/acceptance-matrix-m2.md` | 补 `READBACK_MISMATCH`、`PROPOSAL_NOT_APPROVABLE` 两行；更新七工具措辞一栏 |
 | `docs/scheduler/reviews/m1-pr3-review-b.md` | **不改动**（历史留档，其中的"应进 v1 正文"诉求已被采纳，留档即证据） |
+| `docs/scheduler/incremental-checklist-next-sha.md` | 新增：固定 SHA 到手后只看的 8 项 + 5 条代码红线 + 3 件"明确不做" |
+| `docs/scheduler/tools/contract-diff-check.sh` | 新增：只读 diff 助手，一条命令输出六组增量（已用 `2c48579` 自反验证为空、用 `503210c` 验证能检出 6 个错误码与 3 个工具的增量） |
 
 **未改动**：`lib/features/agent_scheduler/domain/*`、`test/agent_scheduler_test.dart`
 （本轮是纯文档对齐，代码一行没动，也没有新增功能）。
+`git diff -- lib test` 为空，可以当场核。
 
 ## 四、仍然挂着、需要队长或 M0 答复的事
 
