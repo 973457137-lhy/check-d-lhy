@@ -173,5 +173,17 @@ Horolog 的取舍记录见上文第 1 节；截至本文档日期，未引入、
 
 条款级复审结论（不涉及本机执行）见 `docs/scheduler/reviews/incremental-review-m2-state-machine.md`。
 
+### 2026-10-31 v1 CANDIDATE 对齐（`2c48579`）：纯文档，代码未动
+
+队长下发「七工具进 CANDIDATE / TTL 固定 30 分钟不按当日截断 / `token_issued` /
+`explanations` 对象数组 / `reason_code` 大写枚举 / 错误码优先级」对齐指令后：
+
+- 逐条核对 @2c48579，**10 条里 M2 相关的 5、6 已在此前对齐并有测试，其余属 M0/M1 或纯措辞变更**；
+- **撤回我自己先前提的旧建议**：`contract-review-m2.md` 里"TTL 取 30 分钟与当日 23:59 的较早者"
+  已被 M0 否决（会让 TTL 随时钟漂移），已加作废注记；
+- `PROPOSAL_NOT_APPROVABLE` 在契约里全文 0 次，按指令**只做增量判断、不写 Schema**，
+  单独出 `reviews/proposal-not-approvable-incremental.md`；
+- 本轮**没有新增功能、没有改动任何源码**，测试仍是 28/28（未新增用例），历史 18/18、22/22、26/26 原样保留。
+
 **尚未验证的部分：** 未能在宿主工程内以 `flutter test` 原样重跑（受上述 symlink 限制）。
 待本机开启开发人员模式后补跑，结果一致时可撤销本节的降级说明。

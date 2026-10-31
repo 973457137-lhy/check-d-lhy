@@ -2,6 +2,8 @@
 
 > 日期：2026-10-31　负责人：B（M2）
 > 对照版本：M1 PR #3 `bbf0992307531f8945fe5ac25107e2da79dc0e76`
+> 契约对齐：`upstream/feat/m0-api-contract` @ `2c48579`（v1 CANDIDATE 收口版，
+> 对齐记录见 `docs/scheduler/alignment-v1-candidate-2c48579.md`）
 >
 > **纪律：本矩阵不记录任何我没有真正执行过的运行结果。**
 > 判定列只有四种取值：
@@ -42,6 +44,12 @@ M2 能为其中两项提供确定性依据：
 | 11 | violation code（`FIXED_EVENT_CONFLICT` 等） | validate 检出提案违规 | 静态结论：契约仍未定义 | 码需要进 §4.1 附属表，C 才能判定 |
 | 12 | 单次事项旧 `scheduled_at` | 省略/保留现值跨日造成假成功 | **M2 侧已自有证据** | M2 永远显式给同本地日 `scheduled_at`，从不走"保留现值"分支（本轮新用例）；剩余风险只落在 `base_version` 侧 |
 | 13 | 单日例外唯一键 | `user+item_type+item_id+local_date` 重复 | 条款明确；M2 侧提案内唯一 | §5.7 冲突 → `SNAPSHOT_CONFLICT` 零写入；M2 保证同一提案不重复，服务端只会被**并发**触发而非被提案自身触发 |
+| 14 | `READBACK_MISMATCH` | 写后回读与批准内容不一致 | 静态结论：契约已与 `READBACK_PENDING` 分列 | §4.1：前者 502（**已确认不一致**），后者 503（**未知是否写入**）。两者不得互换，也不得合并成一个码——合并会把"不知道"和"知道错了"混成同一条证据 |
+| 15 | `PROPOSAL_NOT_APPROVABLE` | 对非 `pending_approval` 的 Proposal 请求审批 | **契约尚未采用**（@2c48579 全文 0 次） | 属 M1 提议。B 的增量判断与可达测试输入见 `reviews/proposal-not-approvable-incremental.md`；**未写入 Schema**，也未加入 M2 任何 DTO |
+
+> **七工具口径（2026-10-31 对齐后）**：`list_tasks`、`get_calendar_events`、`generate_schedule`、
+> `validate_schedule`、`request_approval`、`get_approval_status`、`apply_approved_changes`
+> **七个全部是 v1 CANDIDATE**，不再有"5 个 v1 + 2 个候选扩展"的说法。
 
 ## 三、M2 侧提供的确定性保障（可直接执行，非静态结论）
 
