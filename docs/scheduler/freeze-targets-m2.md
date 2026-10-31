@@ -21,6 +21,19 @@
 | 6 | `reason_code` 枚举 | **已在 M2 内冻结为 4 个值**（见下） | 否 | 取值文案是否与 C 的验收表一致 |
 | 7 | `explanations` 统一结构 | M2 用**对象数组** `{task_id, text}`（M1 mock 是字符串数组） | 否 | 二者必须选一个 |
 
+### 状态更新（2026-10-31，对照契约 @2c48579 复审后）
+
+复审过程见 `docs/scheduler/incremental-review-m2.md`，本文正文保留了复审**之前**的措辞以便追溯。
+
+| # | 复审后状态 |
+|---|---|
+| 1 | **已实现**：`ScheduleTaskDemand.remainingMinutesToday`，三态（0 / 非 0 / null）均有测试 |
+| 2 | **保持不接入**：契约自标 `scheduling_weight` 算法 BLOCKED，建议由服务端折算成 `priority` 或 demand 顺序 |
+| 7 | **契约已定**：对象数组每项 `{code, message, related_task_ids?}`，字符串形式废弃；M2 已对齐并有测试。**待 M0 给 `explanations[].code` 的枚举** |
+
+> 第 7 条正文里的 `{task_id, text}` 是当时的候选方案，已废弃；实际输出以
+> `schedule_contract.dart` 的 `ScheduleNote.toJson()` 与契约 §5.7 为准。
+
 ## 二、逐条说明
 
 ### 1. `remaining_minutes_today`（recurring，可空）

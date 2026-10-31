@@ -29,17 +29,19 @@ M2 能为其中两项提供确定性依据：
 
 | # | 条目 | 触发条件 | 当前判定 | 证据 / 说明 |
 |---|---|---|---|---|
-| 1 | Proposal/Approval 状态机 | proposal 与审批两个子状态机组合 | 未覆盖 | M2 侧恒出 `draft`；**契约缺组合语义表**（见评审文档 §2 缺口 1）。两个工具的等待 M0 决定是否进正文 |
-| 2 | `readback_pending` | 写入成功但回读尚未确认 | BLOCKED | 依赖真实数据库写后回读流程；mock 无此中间态，且 daily_override **一条都没回读**却标 `readback_verified: true` |
-| 3 | `PROPOSAL_EXPIRED` | 提案超过 `expires_at` | 未覆盖 | mock 两处硬编码 `2026-10-30T23:59`（已过期）且无判过期代码，当前不可达 |
-| 4 | `APPROVAL_EXPIRED` | 审批超过有效期 | 未覆盖 | 同上，审批记录虽有 `expires_at` 但无代码置位 expired |
-| 5 | `ALREADY_APPLIED` | 同一提案重复 apply | 未覆盖 | 判定顺序导致不可达（C 发现，我复核属实）；且码本身不在 §4.1 |
-| 6 | `APPROVAL_CONSUMED` | token 被二次使用 | 未覆盖 | 码存在但不在 §4.1；二次轮询返回 `approval_token: null` 且无错误码 |
-| 7 | daily override 回读 | `upsert_daily_override` 写后再读回比对 | 静态结论：仅 `schedule_one_time` 有回读 | 这是本轮唯一会直接写进比赛材料的假成功，必须修 |
-| 8 | item 不存在 | 变更引用的 task/course 不存在 | 静态结论：会崩 | `STATE["tasks"][task_id]` 直接下标，KeyError 未被 `ToolError` 捕获，应返回 `NOT_FOUND` |
-| 9 | `SNAPSHOT_CONFLICT` | 输入摘要与当前快照不一致 | 未覆盖 | validate 从不重算 `input_digest`，该码在 mock 中不可达 |
-| 10 | `WRITE_BLOCKED` | 无法证明原子性 | 未覆盖 | apply 逐条写无回滚，且没有这条分支 |
-| 11 | violation code（`FIXED_EVENT_CONFLICT` 等） | validate 检出提案违规 | 静态结论：契约未定义 | 码需要进 §4.1 附属表，C 才能判定 |
+| 1 | Proposal/Approval 状态机 | proposal 与审批两个子状态机组合 | 静态结论：§5.7 有 Proposal 8 态图，但缺 5 处 | Approval 无迁移图、`applying` 无出边到 expired、`readback_pending` 无出边、`failed` 后不可重试、无 Proposal×Approval 组合表 → 详见状态机复审文档 G1–G5 |
+| 2 | `readback_pending` | 写入成功但回读尚未确认 | 条款：同幂等键闭合；**换幂等键未定义** | 必修：Proposal 处于 `applying`/`readback_pending` 时换键可能二次写入（状态机复审文档 X1）。Mock 侧仍是 daily_override 一条没回读却标 `readback_verified: true` |
+| 3 | `PROPOSAL_EXPIRED` | 提案超过 `expires_at` | 契约层可达 | §6.5 / §6.7 判定顺序第 3 步；前提是服务端**惰性置位**：任何读取路径发现过期即视为 expired，不依赖定时任务 |
+| 4 | `APPROVAL_EXPIRED` | 审批超过有效期 | 契约层可达，但与第 3 项幂等规则冲突 | Token 过期后要重走审批，而 §6.5 要求返回同一 `approval_id` → 死锁（状态机复审文档 R1） |
+| 5 | `ALREADY_APPLIED` | 同一提案重复 apply | **契约层可达；M1 mock 不可达属实现缺陷** | §6.7 已写死判定顺序：幂等记录 → 是否已 applied → TTL → base_version → Token。C 上轮的发现在这里已闭环 |
+| 6 | `APPROVAL_CONSUMED` | token 被二次使用 | 契约层可达 | §6.7「Token 已消费且不存在相同幂等记录时返回」，顺序正确就不会被 `ALREADY_APPLIED` 抢先 |
+| 7 | daily override 回读 | `upsert_daily_override` 写后再读回比对 | 条款明确 + M2 侧新增字段守卫 | §6.7 七个必核字段；**缺「唯一键下有效记录数恰为 1」断言**；M2 侧已保证字段齐全（新用例） |
+| 8 | item 不存在 | 变更引用的 task/course 不存在 | 静态结论：会崩 | mock 里 `STATE["tasks"][task_id]` 直接下标，KeyError 未被 `ToolError` 捕获，应返回 `NOT_FOUND` |
+| 9 | `SNAPSHOT_CONFLICT` | 输入摘要与当前快照不一致 | 条款：零写入 ✅；**证据 BLOCKED** | §7.2 明写 `base_version` 当前 BLOCKED、Task 3 保持 `WRITE_BLOCKED`，M3 不得标通过 |
+| 10 | `WRITE_BLOCKED` | 无法证明原子性 | BLOCKED | 幂等介质、并发锁、崩溃恢复均未实现 |
+| 11 | violation code（`FIXED_EVENT_CONFLICT` 等） | validate 检出提案违规 | 静态结论：契约仍未定义 | 码需要进 §4.1 附属表，C 才能判定 |
+| 12 | 单次事项旧 `scheduled_at` | 省略/保留现值跨日造成假成功 | **M2 侧已自有证据** | M2 永远显式给同本地日 `scheduled_at`，从不走"保留现值"分支（本轮新用例）；剩余风险只落在 `base_version` 侧 |
+| 13 | 单日例外唯一键 | `user+item_type+item_id+local_date` 重复 | 条款明确；M2 侧提案内唯一 | §5.7 冲突 → `SNAPSHOT_CONFLICT` 零写入；M2 保证同一提案不重复，服务端只会被**并发**触发而非被提案自身触发 |
 
 ## 三、M2 侧提供的确定性保障（可直接执行，非静态结论）
 
@@ -52,13 +54,33 @@ M2 能为其中两项提供确定性依据：
 | 提案 `status` 恒为 `draft`，`snapshot_ref`/`input_digest` 不构造 | 「状态」判定项有唯一取值，服务端字段不由模型伪造 | 同上用例 |
 | block 不跨本地日 | 从源头消解一类 `BLOCK_TIME_INVALID` | `确定性与边界 · 排出来的块不跨自然日` |
 | `reason_code` 封闭枚举 | 「数据」判定项取值有限，C 可穷举校验 | `冻结目标守卫 · reason_code 取值必须落在封闭枚举内` |
-| `explanations` 元素恒为 `{task_id, text}` | 结构形状不会在合并时炸掉 | `冻结目标守卫 · explanations 元素结构统一` |
+| `explanations` 元素恒为 `{code, message, related_task_ids?}` | 结构形状不会在合并时炸掉 | `冻结目标守卫 · explanations 元素结构统一` |
+| `schedule_one_time` 必带同本地日 `scheduled_at` | 消除「写入成功但计划日期仍来自旧值」的假成功路径 | `冻结目标守卫 · 单次事项必须显式带与 planned_date 同日的 scheduled_at` |
+| `upsert_daily_override` 七字段齐全 + `0 <= start < 1440 < end <= 1440` + `item_type` 不含 course + `existing_override_id` 恒 null | 服务端回读不会因为提案侧缺字段而失败；也不靠猜 override id 制造重复记录 | `冻结目标守卫 · 单日例外变更字段齐全、分钟合法，且同一唯一键在提案内只出现一次` |
+| 同一提案内 `(item_type, item_id, local_date)` 与 `(task_id, planned_date)` 唯一 | 服务端的 `SNAPSHOT_CONFLICT` 只会被**并发**触发，不会被提案自撞触发；「写入次数」= `changes.length` 保持成立 | 同上用例 |
 
-## 四、增量复审清单（M0 发新契约后只看这 4 项）
+## 四、C 的 Proposal / Approval 增量复审清单（10 项）判定
 
-1. 表二第 1–11 行里标「未覆盖」的条目，是否在新契约里都给了**可达路径**（不只是列名存在）。
-2. 第 5、6、10 行的三个码是否真正写入 §4.1，violation code 是否单列一张表。
-3. `readback_pending` 是否定义为一个**显式状态**而非布尔字段——否则「写入次数」判定项无法区分「未写入」与「写入待确认」。
-4. 第 7、8 行是否修完并可产生对应的失败用例；M2 侧届时不重跑 M1 mock，只确认 field 与自己的 Proposal 输出一致。
+详细条款依据见 `docs/scheduler/reviews/incremental-review-m2-state-machine.md`。
+
+| # | C 的条目 | B 的判定 | 归属 |
+|---|---|---|---|
+| 1 | Proposal 与 Approval 状态迁移是否完整 | **不完整**，5 处缺口（G1–G5） | M0 补图 |
+| 2 | 5 个错误码是否可达 | PROPOSAL_EXPIRED / APPROVAL_PENDING / APPROVAL_EXPIRED / APPROVAL_CONSUMED **条款可达**；ALREADY_APPLIED **条款可达**（mock 不可达是实现缺陷） | M0 已闭环 / M1 改实现 |
+| 3 | 重复 `request_approval` 的幂等规则 | 规则在，但 **Token 过期重走审批 ↔ 返回同一 approval_id 死锁（必修 R1）**；另有 3 处未明写 | M0 必修 / OQ5 |
+| 4 | 同幂等键重放与换键重复 apply 的判定顺序 | §6.7 顺序**写得对且零写入声明明确** ✅；唯一漏洞在第 7 项 | M0 已闭环 |
+| 5 | Proposal 30 分钟、Token 5 分钟边界 | 数值对，边界口径缺 3 条（`>=` vs `>`、`token_expires_at` 截断、时钟源） | M0 补口径 |
+| 6 | 版本冲突是否保证零写入 | 条款承诺零写入 ✅；但 §7.2 `base_version` **BLOCKED**，M3 不得标通过 | M0 / 服务端证据 |
+| 7 | `readback_pending` 只回读禁重写 | 同键 ✅；**换键未定义 → 唯一一条可能二次写入的通道（必修 X1）** | M0 必修 |
+| 8 | 单次事项旧 `scheduled_at` 冲突防护 | 条款清楚 ✅；**M2 侧已用可执行守卫消除该路径** | M2 已交 / 服务端补 `base_version` |
+| 9 | daily override 唯一键与完整回读字段 | 条款正确 ✅；缺「记录数恰为 1」断言；回读路径未定（OQ3） | M0 补 / M1 补断言 |
+| 10 | 四项判定口径继续生效 | **接受**。M2 侧的「写入次数」= `changes.length`，见第三节 | 全员 |
+
+## 五、下次契约更新只增量看这些
+
+1. 第 3 项 R1 与第 7 项 X1 是否被写入正式条款（这两条不补，「错误码可达」与「零写入」两栏就有一条是假的）。
+2. 状态机图是否补上 `applying → expired`、`readback_pending → applied/failed`，以及 Approval 迁移图。
+3. 过期边界 `>=` 与 `token_expires_at` 截断算法是否与 M2 的 `ScheduleDeadline.isPast` 同口径。
+4. violation code 是否单列一张表（表二第 11 行）。
 
 其余内容不再重新审阅。

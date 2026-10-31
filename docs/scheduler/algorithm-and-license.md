@@ -155,5 +155,23 @@ Horolog 的取舍记录见上文第 1 节；截至本文档日期，未引入、
 另修正一处守卫自身的问题：模块边界用例原本扫描含注释的原文，会被本模块
 「不调用 DateTime.now()」这行注释自己绊倒；现改为只扫描去掉行注释后的代码。
 
+### 2026-10-31 第四轮：28/28 通过（C 的写入安全清单 → change 层守卫）
+
+同一环境。总结 C 的「 Proposal/Approval 增量复审清单」新增 2 个 change 层守卫：
+
+1. `schedule_one_time` 必须显式携带 `scheduled_at`，且它与 `planned_date` 同属一个本地日。
+   契约第 5.7 节里「省略 `scheduled_at` 表示保留现值」一旦保留到旧值跨日，
+   就会出现「写入成功但有效计划日期仍来自旧 `scheduled_at`」的假成功；
+   M2 从不走这条分支，故以测试把它锁死。
+2. `upsert_daily_override` 的七个回读字段齐全、`item_type` 只能是 `recurring`/`one_time`
+   （不得借单日例外改课程）、`action` 恒 `reschedule`、`0 <= start < 1440 < end <= 1440`、
+   同一 `(item_type, item_id, local_date)` 在提案内唯一，且 `existing_override_id` 恒为 null
+   （模型不得猜测，只能由可信读取提供）。
+
+结果：**28/28 通过**。宿主工程 `flutter test` 依旧没有复跑（同 §8 开头的原因），
+本机证据只有隔离工程的 Dart VM 通道，不夸大为工程内已验证。
+
+条款级复审结论（不涉及本机执行）见 `docs/scheduler/reviews/incremental-review-m2-state-machine.md`。
+
 **尚未验证的部分：** 未能在宿主工程内以 `flutter test` 原样重跑（受上述 symlink 限制）。
 待本机开启开发人员模式后补跑，结果一致时可撤销本节的降级说明。

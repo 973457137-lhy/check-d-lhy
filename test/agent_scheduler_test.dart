@@ -881,6 +881,122 @@ void main() {
       expect(proposal.changes.single.toJson()['change_id'], isNotNull);
     });
 
+    test('单次事项必须显式带与 planned_date 同日的 scheduled_at', () {
+      final input = ScheduleInput(
+        now: _at(0, 8),
+        horizonStart: _at(0, 8),
+        horizonEnd: _at(2, 22),
+        baseVersion: 'v1',
+        availability: [
+          ScheduleWindow(startAt: _at(0, 9), endAt: _at(0, 12)),
+        ],
+        demands: [
+          ScheduleTaskDemand(
+            taskId: 'onetime-guarded',
+            title: '单次：体检预约',
+            requiredMinutes: 45,
+            taskKind: ScheduleTaskKind.oneTime,
+          ),
+        ],
+      );
+
+      final proposal = generateSchedule(input);
+      final oneTime = proposal.changes.whereType<ScheduleOneTimeChange>().toList();
+
+      expect(oneTime, isNotEmpty);
+      for (final change in oneTime) {
+        final json = change.toJson();
+        // 契约第 5.7 节：省略 scheduled_at 表示保留现值，保留后的值若与新的
+        // planned_date 不同日必须以 PROPOSAL_INVALID 拒绝，否则会出现
+        // "写入成功但有效计划日期仍来自旧 scheduled_at"的假成功。
+        // M2 一律显式给出同一本地日的 scheduled_at，从源头不留这条路径。
+        expect(json['scheduled_at'], isNotNull, reason: json.toString());
+        final scheduledAt = DateTime.parse(json['scheduled_at'] as String);
+        expect(
+          scheduleDayOnly(scheduledAt),
+          scheduleDayOnly(change.plannedDate),
+          reason: 'scheduled_at 必须与 planned_date 同属一个本地日',
+        );
+      }
+    });
+
+    test('单日例外变更字段齐全、分钟合法，且同一唯一键在提案内只出现一次', () {
+      final input = ScheduleInput(
+        now: _at(0, 8),
+        horizonStart: _at(0, 8),
+        horizonEnd: _at(0, 22),
+        baseVersion: 'v1',
+        availability: [
+          ScheduleWindow(startAt: _at(0, 9), endAt: _at(0, 12)),
+        ],
+        demands: [
+          ScheduleTaskDemand(
+            taskId: 'recurring-override-a',
+            title: '周期：每日练琴',
+            requiredMinutes: 60,
+            taskKind: ScheduleTaskKind.recurring,
+          ),
+          ScheduleTaskDemand(
+            taskId: 'recurring-override-b',
+            title: '周期：每日阅读',
+            requiredMinutes: 30,
+            taskKind: ScheduleTaskKind.recurring,
+          ),
+        ],
+      );
+
+      final proposal = generateSchedule(input);
+      final overrides =
+          proposal.changes.whereType<UpsertDailyOverrideChange>().toList();
+
+      expect(overrides, hasLength(2));
+
+      // 契约第 6.7 节：这七个字段缺一不可，否则回读必然失败。
+      const requiredKeys = <String>{
+        'change_id',
+        'type',
+        'item_type',
+        'item_id',
+        'local_date',
+        'action',
+        'planned_start_minute',
+        'planned_end_minute',
+      };
+
+      final uniqueKeys = <String>{};
+      for (final change in overrides) {
+        final json = change.toJson();
+        for (final key in requiredKeys) {
+          expect(json.containsKey(key), isTrue, reason: '$key 缺失 → $json');
+        }
+        // 不允许借用单日例外去改课程。
+        expect({'recurring', 'one_time'}, contains(json['item_type']));
+        expect(json['type'], 'upsert_daily_override');
+        expect(json['action'], 'reschedule');
+
+        final start = json['planned_start_minute'] as int;
+        final end = json['planned_end_minute'] as int;
+        expect(start, greaterThanOrEqualTo(0));
+        expect(start, lessThan(1440));
+        // 契约第 5.7 节：结束分钟必须晚于开始分钟。
+        expect(end, greaterThan(start), reason: json.toString());
+        expect(end, lessThanOrEqualTo(1440));
+
+        // existing_override_id 只能来自可信读取，模型不得猜测。
+        expect(json['existing_override_id'], isNull);
+
+        // (user, item_type, item_id, local_date) 在提案内不得重复，
+        // 否则服务端会撞第 5.7 节的唯一键冲突并触发零写入。
+        expect(
+          uniqueKeys.add(
+            '${json['item_type']}|${json['item_id']}|${json['local_date']}',
+          ),
+          isTrue,
+          reason: json.toString(),
+        );
+      }
+    });
+
     test('reason_code 取值必须落在封闭枚举内', () {
       final input = ScheduleInput(
         now: _at(0, 8),
