@@ -198,12 +198,13 @@ class ScheduleDeadline {
 
   /// 是否已在 [now] 过期。
   ///
-  /// 日期型：过了那一天才算逾期。精确型：过点即逾期。
+  /// 日期型：过了那一天才算逾期。
+  /// 精确型：到达该时刻即逾期（`now == dueAt` 时截止已经生效）。
   bool isPast(DateTime now) {
     if (isDateOnly) {
       return scheduleDayOnly(now).isAfter(scheduleDayOnly(dueDateOn!));
     }
-    return now.toUtc().isAfter(dueAt!.toUtc());
+    return !now.toUtc().isBefore(dueAt!.toUtc());
   }
 }
 

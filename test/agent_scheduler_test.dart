@@ -8,6 +8,15 @@ import 'package:flutter_test/flutter_test.dart';
 // 固定周一，保证测试与运行时无关。
 final DateTime _monday = DateTime(2026, 11, 2);
 
+/// 去掉行注释，让模块边界守卫只检查真正的代码。
+String stripComments(String source) => source
+    .split('\n')
+    .map((line) {
+      final comment = line.indexOf('//');
+      return comment < 0 ? line : line.substring(0, comment);
+    })
+    .join('\n');
+
 DateTime _at(int dayOffset, int hour, [int minute = 0]) =>
     DateTime(_monday.year, _monday.month, _monday.day + dayOffset, hour, minute);
 
@@ -679,12 +688,14 @@ void main() {
         'lib/features/agent_scheduler/domain/schedule_contract.dart',
         'lib/features/agent_scheduler/domain/schedule_engine.dart',
       ]) {
-        final source = File(path).readAsStringSync();
-        expect(source, isNot(contains('package:drift')), reason: path);
-        expect(source, isNot(contains('package:supabase')), reason: path);
-        expect(source, isNot(contains('task_repository')), reason: path);
-        expect(source, isNot(contains('app_database')), reason: path);
-        expect(source, isNot(contains('DateTime.now()')), reason: path);
+        // 只扫描代码：本模块的文档注释里本就会出现这些名字（用于说明"不得依赖"），
+        // 若连注释一起匹配，守卫会被自己绊倒。
+        final code = stripComments(File(path).readAsStringSync());
+        expect(code, isNot(contains('package:drift')), reason: path);
+        expect(code, isNot(contains('package:supabase')), reason: path);
+        expect(code, isNot(contains('task_repository')), reason: path);
+        expect(code, isNot(contains('app_database')), reason: path);
+        expect(code, isNot(contains('DateTime.now()')), reason: path);
       }
     });
   });

@@ -121,7 +121,15 @@ List<ScheduleWindow> _freeWindows(
   for (final window in result) {
     if (window.isEmpty) continue;
     final last = collapsed.isEmpty ? null : collapsed.last;
-    if (last != null && _atOrAfter(last.endAt, window.startAt)) {
+    // 合并只在同一自然日内进行：跨零点相邻的两段一旦合并，
+    // 就会重新长出跨日窗口，任务块不得跨日本地日的保证会被破坏。
+    final mergeable =
+        last != null &&
+        _atOrAfter(last.endAt, window.startAt) &&
+        scheduleDayOnly(last.startAt).isAtSameMomentAs(
+          scheduleDayOnly(window.startAt),
+        );
+    if (mergeable && last != null) {
       collapsed[collapsed.length - 1] = ScheduleWindow(
         startAt: last.startAt,
         endAt: _later(last.endAt, window.endAt),
