@@ -66,16 +66,15 @@ Token 过期 → 旧审批终结（进入终态 APPROVAL_EXPIRED，不再视为�
 用例 `P3 样例二` 断言：完整目标 120 分钟（`targetDurationSeconds=7200`）时，
 只排 40 分钟且 `duration_source == 'task_target'`。本轮的三态用例再次覆盖。
 
-### 6. `input_digest` 包含 horizon 起止时间与 Asia/Shanghai 时区 —— M2 侧给证据，digest 由服务端算
+### 6. `input_digest` 包含 horizon 起止时间与 Asia/Shanghai 时区 —— 时区结论已撤回（C 指正）
 
-M2 **不计算** `input_digest`（恒 null，禁止伪造），这是方案 A 的职责。M2 提供两条可执行证据：
+M2 **不计算** `input_digest`（恒 null，禁止伪造），这是方案 A 的职责。M2 提供一条可执行证据：
 
 - **horizon 必须纳入**：`冻结目标守卫 · horizon 起止会改变输出` —— 只改 `horizonEnd`
   （10:30 vs 22:00）输出就不同（1 块 vs 3 块）。摘要不覆盖 horizon 会让两个不同提案共享同一 digest。
-- **时区必须纳入**：新增 `冻结目标守卫 · 时区标签不改变 M2 输出，故 input_digest 必须由服务端纳入时区` ——
-  同一输入只把 `timezone` 从 `Asia/Shanghai` 换成 `UTC`，输出**逐字节相同**。
-  M2 完全无视时区标签（不做转换，假设服务端传入的已是 +08:00）；
-  因此服务端若也不纳入时区，跨时区的两个提案会共享同一 digest。
+- **时区结论已撤回**：原「digest 必须纳入时区」说法撤销——契约把 `timezone` 固定为
+  Asia/Shanghai、不接受其他值，纳入 digest 永远不产生区分度（C 指正）。M2 侧保留事实性陈述：
+  `冻结目标守卫 · 时区标签不改变 M2 输出（M2 不做时区转换）`。
 
 建议的规范化输入（供 M0 落笔）：`{now, horizon_start, horizon_end, base_version, timezone,
 availability, fixed_blocks, demands, existing_placements, preferences}` 按稳定键序序列化 + SHA-256。

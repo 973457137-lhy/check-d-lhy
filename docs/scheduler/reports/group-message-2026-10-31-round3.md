@@ -12,10 +12,9 @@ B（M2）第三轮增量修订完成，SHA d8a5ab9（回填 7a47dd9），已推 
    ALREADY_DONE_TODAY、不进兜底；正数=折算成当天剩余且标 task_target。
    40 分钟样例：完整目标 120 也只排 40；0 样例：不排不记。
 
-2. input_digest —— 两条可执行证据（digest 由服务端算，M2 恒不构造）
-   只改 horizonEnd 输出就不同；只换时区标签输出逐字节相同。
-   结论：digest 必须含 horizon 起止 + Asia/Shanghai 时区，否则跨时区/跨区间的
-   两个提案会共享同一摘要。
+2. input_digest —— horizon 一条可执行证据（digest 由服务端算，M2 恒不构造）
+   只改 horizonEnd 输出就不同（1 块 vs 3 块），故 digest 必须含 horizon 起止。
+   时区结论已撤回：契约固定 Asia/Shanghai、无区分度（C 指正），M2 不做时区转换。
 
 3. Proposal 只出内部 DTO —— 加递归守卫，5 个服务端字段任意层级不出现。
    base_version 目前是"原样带回"，请 M0 回一句：回声保留还是也删。
@@ -42,8 +41,8 @@ B（M2）第三轮增量修订完成，SHA d8a5ab9（回填 7a47dd9），已推 
 
 ```
 B（M2）第三轮完成，SHA d8a5ab9。
-B19/G1/G2 三态已锁死（0 不排、40 只排 40、都标 task_target）；digest 已给出
-horizon+时区两条证据；Proposal 只出内部 DTO（5 个服务端字段递归守卫）。
+B19/G1/G2 三态已锁死（0 不排、40 只排 40、都标 task_target，判据用 2400s）；digest 已给
+horizon 证据（时区结论撤回）；Proposal 只出内部 DTO（5 个服务端字段递归守卫）。
 B18/R1 举证 M2 无实现可改，判定顺序已给出，需 M1 mock 实现 + M0 落笔 §6.5/§6.7。
 explanations 映射表已交付。隔离 38/38；宿主 flutter test 未执行（WebSocket，分开报告）。
 ```

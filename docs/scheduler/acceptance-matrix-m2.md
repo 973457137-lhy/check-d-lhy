@@ -48,7 +48,7 @@ M2 能为其中两项提供确定性依据：
 | 12 | 单次事项旧 `scheduled_at` | 省略/保留现值跨日造成假成功 | **M2 侧已自有证据** | M2 永远显式给同本地日 `scheduled_at`，从不走"保留现值"分支（本轮新用例）；剩余风险只落在 `base_version` 侧 |
 | 13 | 单日例外唯一键 | `user+item_type+item_id+local_date` 重复 | 条款明确；M2 侧提案内唯一 | §5.7 冲突 → `SNAPSHOT_CONFLICT` 零写入；M2 保证同一提案不重复，服务端只会被**并发**触发而非被提案自身触发 |
 | 14 | `READBACK_MISMATCH` | 写后回读与批准内容不一致 | 静态结论：契约已与 `READBACK_PENDING` 分列 | §4.1：前者 502（**已确认不一致**），后者 503（**未知是否写入**）。两者不得互换，也不得合并成一个码——合并会把"不知道"和"知道错了"混成同一条证据 |
-| 16 | `input_digest` 覆盖范围 | 是否含 horizon 起止与时区 | **M0 已决定要含**；M2 侧补了两条可执行证据：只改 `horizonEnd` 输出就不同（`horizon 起止会改变输出`）；只换时区标签输出逐字节相同（`时区标签不改变 M2 输出，故 input_digest 必须由服务端纳入时区`） | 时区仍 BLOCKED：M2 不做时区转换，只能由服务端纳入规范化 |
+| 16 | `input_digest` 覆盖范围 | 是否含 horizon 起止与时区 | **M0 已决定要含**；M2 侧补了可执行证据：只改 `horizonEnd` 输出就不同（`horizon 起止会改变输出`）。**时区结论已撤回**（契约固定 Asia/Shanghai、无区分度，C 指正），M2 仅保留「不做时区转换」事实陈述 | 时区仍 BLOCKED：M2 不做时区转换，只能由服务端纳入规范化 |
 
 | 15 | `PROPOSAL_NOT_APPROVABLE` | 对非 `pending_approval` 的 Proposal 请求审批 | **契约尚未采用**（@2c48579 全文 0 次） | 属 M1 提议。B 的增量判断与可达测试输入见 `reviews/proposal-not-approvable-incremental.md`；**未写入 Schema**，也未加入 M2 任何 DTO |
 

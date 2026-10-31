@@ -866,6 +866,8 @@ void main() {
       final block = proposal.blocks.single;
 
       expect(block.minutes, 40);
+      // 判据用精确秒数（2400s），不用「40 分钟」文字（C 的 G2 口径）。
+      expect(block.durationSeconds, 2400);
       expect(block.durationSource, 'task_target');
     });
 
@@ -956,7 +958,7 @@ void main() {
       }
     });
 
-    test('时区标签不改变 M2 输出，故 input_digest 必须由服务端纳入时区', () {
+    test('时区标签不改变 M2 输出（M2 不做时区转换）', () {
       ScheduleInput build(String timezone) => ScheduleInput(
             now: _at(0, 8),
             horizonStart: _at(0, 8),
@@ -980,10 +982,11 @@ void main() {
 
       // M2 完全无视时区标签：两个不同时区拿到逐字节相同的排程。
       expect(jsonEncode(shanghai.toJson()), jsonEncode(utc.toJson()));
-
-      // 这正是摘要必须含时区的原因：M2 不区分，服务端若也不区分，
-      // 两个不同时区（同一墙上时间）的提案会共享同一份 input_digest。
       expect(shanghai.blocks.single.startAt, _at(0, 9));
+
+      // 撤回「digest 必须纳入时区」的结论（C 指正）：契约把 timezone 固定为
+      // Asia/Shanghai、不接受其他值，纳入 digest 永远不产生区分度。
+      // 真正要防的是 horizon，见上一条用例。
     });
 
     test('内部调度 DTO 递归不含任何服务端字段', () {
