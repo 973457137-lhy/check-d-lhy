@@ -109,3 +109,15 @@ bash docs/scheduler/tools/contract-diff-check.sh <新的固定SHA>
 
 历史用例数不覆盖：本轮 38/38（隔离）+ 38/38（宿主 flutter test，本轮环境正常）。
 
+## 六、c9dda83 轮结论（2026-11-01 已跑）
+
+新固定 SHA `c9dda83195a9af4b9ca762d8556fdd0e8d43010a`（B20 最小一致性修复，M0 队长本人提交）到手后跑 diff + 增量核对：
+
+- 相对 c53b1a9 仅改 `docs/contracts/agent-api-v1.md` 一处，2 insertions / 1 deletion；JSON/业务代码/状态机/HTTP 码/错误码表均未动。
+- 唯一变化：§4.1 `READBACK_PENDING` 的错误详情 `proposal_status` 取值从「固定 readback_pending」改为「只能为 `applying` 或 `readback_pending`，且须准确反映 Proposal 当前真实状态」。两种路径仍零业务写入、不允许二次 apply。
+- 错误码集合无变化、工具清单仍七个、§5.6/§5.7 及示例文件零变化。
+- **不命中「红线信号」任何一条**（schedule_block 字段 / status 8 态 / changes 白名单 / reason_code 四值 / explanations 形状均未变），`proposal_status` 属服务端错误详情语义，非 M2 输出结构。
+- **结论：零代码改动、零测试。** 仅切换契约基准为 c9dda831（`contract-diff-check.sh` BASE_SHA 更新），PR #2 继续保留未合并。
+
+本轮无测试运行（M0 明确本轮不需为这处纯文档变更重跑 38/38）。
+

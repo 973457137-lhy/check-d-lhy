@@ -9,10 +9,10 @@
 #   - 用途单一：帮 B 在拿到新 SHA 后「只看增量」，不触发完整评审。
 #   - 先执行 `git fetch upstream`，否则新 SHA 的文档对象可能不在本地。
 #
-# 维护人：B（M2）　基准：`upstream/feat/m0-api-contract` @ c53b1a9
+# 维护人：B（M2）　基准：`upstream/feat/m0-api-contract` @ c9dda83
 set -uo pipefail
 
-BASE_SHA="c53b1a9"
+BASE_SHA="c9dda83"
 CONTRACT_FILE="docs/contracts/agent-api-v1.md"
 EXAMPLES_FILE="docs/contracts/agent-api-v1.examples.json"
 NEW_SHA="${1:-}"
