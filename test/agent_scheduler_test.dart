@@ -399,7 +399,6 @@ void main() {
   group('repairSchedule 最小扰动重排', () {
     test('插入会议只移动冲突的柔性块', () {
       final previous = ScheduleProposal(
-        baseVersion: 'v1',
         blocks: [
           ProposedBlock(
             taskId: 'task-a',
@@ -463,7 +462,6 @@ void main() {
 
     test('无可排位置时返回未安排量与理由', () {
       final previous = ScheduleProposal(
-        baseVersion: 'v1',
         blocks: [
           ProposedBlock(
             taskId: 'task-c',
@@ -504,7 +502,6 @@ void main() {
 
     test('上一版未排进去的任务在重排时会被重新尝试', () {
       final previous = ScheduleProposal(
-        baseVersion: 'v1',
         unplannedTasks: [
           UnplannedTask(
             taskId: 'task-d',
@@ -593,7 +590,8 @@ void main() {
     test('提案 JSON 字段与契约第 5.7 节一致', () {
       final json = generateSchedule(mixedInput()).toJson();
 
-      expect(json['status'], 'draft');
+      // 方案 A：status 属服务端字段，M2 不输出。
+      expect(json.containsKey('status'), isFalse);
       for (final key in [
         'blocks',
         'changes',
@@ -1015,6 +1013,8 @@ void main() {
         'input_digest',
         'generated_at',
         'expires_at',
+        'base_version',
+        'status',
       };
 
       void walk(Object? node) {
@@ -1035,9 +1035,6 @@ void main() {
       }
 
       walk(jsonDecode(jsonEncode(proposal.toJson())));
-
-      // base_version 只允许是服务端给定值的原样带回，M2 不生成也不改写。
-      expect(proposal.baseVersion, input.baseVersion);
     });
 
     test('explanations 码必须落在 v1 公共枚举内，repair 专用码不得外泄', () {
@@ -1164,10 +1161,10 @@ void main() {
       }
 
       // 「状态」判定项：纯函数不得产生终态，也不得自己构造服务端字段。
-      expect(proposal.status, ScheduleProposalStatus.draft);
-      expect(proposal.toJson()['status'], 'draft');
-      expect(proposal.snapshotRef, isNull);
-      expect(proposal.inputDigest, isNull);
+      // 方案 A：M2 只输出内部四部分，status/snapshot_ref/input_digest 均不序列化。
+      expect(proposal.toJson().containsKey('status'), isFalse);
+      expect(proposal.toJson().containsKey('snapshot_ref'), isFalse);
+      expect(proposal.toJson().containsKey('input_digest'), isFalse);
     });
 
     test('周期任务同一本地日最多一个 block，且同一 (任务, 日期) 只产出一条变更', () {
@@ -1255,16 +1252,8 @@ void main() {
       final proposal = generateSchedule(input);
       final json = jsonDecode(jsonEncode(proposal.toJson())) as Map<String, dynamic>;
 
-      // 顶层：必须 §5.7 列出的字段，且不得出现契约外的键。
-      // generated_at / expires_at / snapshot_ref / input_digest 属服务端
-      // （「服务端不得接受客户端指定或延长该 TTL」），M2 一律不构造。
+      // 顶层：方案 A 下 M2 只输出内部四部分，服务端权威字段一律不出现。
       const allowedTopLevelKeys = <String>{
-        'snapshot_ref',
-        'base_version',
-        'input_digest',
-        'status',
-        'generated_at',
-        'expires_at',
         'blocks',
         'changes',
         'unplanned_tasks',
@@ -1272,17 +1261,15 @@ void main() {
       };
       for (final key in json.keys) {
         expect(allowedTopLevelKeys, contains(key),
-            reason: '契约第 5.7 节未列出顶层字段：$key');
+            reason: '方案 A 下 M2 不得输出该顶层字段：$key');
       }
       for (final key in const [
-        'base_version',
-        'status',
         'blocks',
         'changes',
         'unplanned_tasks',
         'explanations',
       ]) {
-        expect(json.containsKey(key), isTrue, reason: '缺少契约字段 $key');
+        expect(json.containsKey(key), isTrue, reason: '缺少 M2 内部结果字段 $key');
       }
 
       // 展示块：§5.6 的九个字段，一个不多一个不少。

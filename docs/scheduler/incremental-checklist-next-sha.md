@@ -93,3 +93,19 @@ bash docs/scheduler/tools/contract-diff-check.sh <新的固定SHA>
 3. X1 二次写入（上面第 5 项）。
 
 这三件不答，四判定项里「错误码」和「写入次数」两栏就还有开不了口的格子。
+
+## 五、c53b1a9 轮结论（2026-10-31 已跑）
+
+新固定 SHA `c53b1a91c17cd9acdee6d3937c093fcf97515ba0` 到手后按本清单跑了 diff + 8 项：
+
+- 工具清单仍是七个、时长兜底仍是 `max(minimum_block_minutes, 30)`、`remaining_minutes_today`
+  三态不变 —— 均无代码改动。
+- `explanations[].code` 七值闭集契约已写死，与 `kPublicExplanationCodes` 逐字一致；repair 专用
+  `DISPLACED_BY_FIXED`/`REPAIR_SUMMARY` 禁止进 v1 也已明文 —— 守卫早已绑定，无改动。
+- 新增 §5.8 `violations` 七值闭集 —— 属 `validate_schedule` 服务端校验职责，**M2 不实现**。
+- **命中红线**：契约把「方案 A」从暂定改为明文（M2 不输出 `proposal_id`/`snapshot_ref`/
+  `base_version`/`input_digest`/`generated_at`/`expires_at`/`status`），已改 `ScheduleProposal`
+  序列化只输出内部四部分，并同步守卫用例。详见 `reports/incremental-alignment-m2-c53b1a9.md`。
+
+历史用例数不覆盖：本轮 38/38（隔离）+ 38/38（宿主 flutter test，本轮环境正常）。
+

@@ -50,8 +50,9 @@ extension ScheduleTaskKindCode on ScheduleTaskKind {
 
 /// 提案状态机，取值与契约 `schedule_proposal.status` 一致。
 ///
-/// 纯调度函数只会产出 `draft`。结构合法但撞到硬约束的提案也保持 `draft`，
-/// 由服务端 `validate_schedule` 决定是否推进，这里绝不冒充 `validated`。
+/// 方案 A（c53b1a9 起）：`status` 是**服务端权威字段**，M2 纯调度函数不产出、
+/// 不序列化它。这里保留枚举只是作为契约状态机的进程内参照（例如给服务端包装层
+/// 或验收矩阵对齐状态名），[ScheduleProposal] 本身不再携带 `status`。
 enum ScheduleProposalStatus {
   draft,
   pendingApproval,
@@ -587,36 +588,19 @@ class ScheduleNote {
 /// - [blocks] 是可展示但**不可直接持久化**的时间块；
 /// - [changes] 才是允许落库的白名单变更，只有两种形态。
 ///
-/// **方案 A（M0 2026-10-31 决定）**：完整 Proposal 由服务端序列化。
-/// 因此这里**不含** `proposal_id` / `snapshot_ref` / `input_digest` /
-/// `generated_at` / `expires_at` —— 它们全由服务端生成，M2 不得自行构造；
-/// `base_version` 只是把服务端给进来的值原样带回，方便服务端对账。
+/// **方案 A（M0 2026-10-31 决定，c53b1a9 起明确写进契约 §5.7）**：
+/// 完整 Proposal 由服务端序列化。M2 纯调度函数**只输出内部调度结果**，
+/// 即 `blocks` / `changes` / `unplanned_tasks` / `explanations` 四部分；
+/// 不得生成或输出 `proposal_id`、`snapshot_ref`、`base_version`、
+/// `input_digest`、`generated_at`、`expires_at`、`status` 等服务端权威字段。
+/// 服务端包装层负责生成并持久化这些字段，再把内部四部分组装成完整 Proposal。
 class ScheduleProposal {
   const ScheduleProposal({
-    required this.baseVersion,
-    this.status = ScheduleProposalStatus.draft,
-    this.snapshotRef,
-    this.inputDigest,
     this.blocks = const [],
     this.changes = const [],
     this.unplannedTasks = const [],
     this.notes = const [],
   });
-
-  /// 生产环境下必须由可信服务产生并绑定 `snapshot_ref`，
-  /// 进程内调用传入的值只用于测试。
-  ///
-  /// M2 **只原样带回**服务端随内部输入给定的值，不生成、不改写、不兜底造一个。
-  final String baseVersion;
-
-  /// 纯调度函数永远只产出 `draft`，由服务端决定是否推进到 `validated`。
-  final ScheduleProposalStatus status;
-
-  /// 服务端创建并保存的快照引用。客户端与模型不得构造。
-  final String? snapshotRef;
-
-  /// 服务端对规范化输入生成的摘要。客户端提供的摘要不可信。
-  final String? inputDigest;
 
   /// 展示用时间块，对应 `blocks`。
   final List<ProposedBlock> blocks;
@@ -636,12 +620,8 @@ class ScheduleProposal {
   List<ScheduleNote> get publicExplanations =>
       notes.where((note) => note.isPublic).toList();
 
+  /// 方案 A 下 M2 只序列化内部四部分，服务端权威字段一律不输出。
   Map<String, dynamic> toJson() => {
-    // 没有 `proposal_id`：方案 A 下它由 M0 服务端序列化时生成，M2 不得伪造。
-    'base_version': baseVersion,
-    'status': status.code,
-    if (snapshotRef != null) 'snapshot_ref': snapshotRef,
-    if (inputDigest != null) 'input_digest': inputDigest,
     'blocks': blocks.map((block) => block.toJson()).toList(),
     'changes': changes.map((change) => change.toJson()).toList(),
     'unplanned_tasks': unplannedTasks.map((task) => task.toJson()).toList(),

@@ -347,8 +347,6 @@ ScheduleProposal generateSchedule(ScheduleInput input) {
       ),
     );
     return ScheduleProposal(
-
-      baseVersion: input.baseVersion,
       unplannedTasks: ordered
           .map(
             (demand) => _unplanned(
@@ -372,8 +370,6 @@ ScheduleProposal generateSchedule(ScheduleInput input) {
       ),
     );
     return ScheduleProposal(
-
-      baseVersion: input.baseVersion,
       unplannedTasks: ordered
           .map(
             (demand) => _unplanned(
@@ -469,7 +465,6 @@ ScheduleProposal generateSchedule(ScheduleInput input) {
   });
 
   return ScheduleProposal(
-    baseVersion: input.baseVersion,
     blocks: changes,
     changes: _buildChanges(changes),
     unplannedTasks: unplanned,
@@ -650,8 +645,6 @@ ScheduleProposal repairSchedule(
   );
 
   return ScheduleProposal(
-
-    baseVersion: input.baseVersion,
     blocks: changes,
     changes: _buildChanges(changes),
     unplannedTasks: unplanned,
