@@ -4,6 +4,9 @@
 > 对照版本：M1 PR #3 `bbf0992307531f8945fe5ac25107e2da79dc0e76`
 > 契约对齐：`upstream/feat/m0-api-contract` @ `2c48579`（v1 CANDIDATE 收口版，
 > 对齐记录见 `docs/scheduler/alignment-v1-candidate-2c48579.md`）
+> **契约基准自 2026-10-31 起为两份文件**：`docs/contracts/agent-api-v1.md` +
+> `docs/contracts/agent-api-v1.examples.json`（示例文件的核对结论见
+> `docs/scheduler/reports/incremental-alignment-m2-2c48579-examples.md`）
 >
 > **纪律：本矩阵不记录任何我没有真正执行过的运行结果。**
 > 判定列只有四种取值：
@@ -25,7 +28,7 @@ M2 能为其中两项提供确定性依据：
 | 响应码 | 否（归 M0/M1 服务端） | — |
 | 状态 | 部分 | M2 的 proposal 恒为 `draft`（`ScheduleProposalStatus`），由纯函数保证 |
 | 数据 | **是** | blocks / changes / unplanned_tasks / explanations 结构与枚举全部由测试锁定 |
-| **写入次数** | **是** | 见下面第 3 条：M2 保证「一个 (item_id, local_date) 至多一条变更」，因此期望写入次数可从提案直接推算，无需猜 |
+| **写入次数** | **是** | 见下面第 3 条：M2 保证「一个 (item_id, local_date) 至多一条变更」，因此期望写入次数可从提案直接推算，无需猜。**2026-10-31 起另有契约侧佐证**：`agent-api-v1.examples.json` 的 `apply_approved_changes_success` 里 `applied_changes` 逐字段复用提案 change 形状，且是响应中唯一的写入汇总位置 |
 
 ## 二、错误码与状态矩阵
 
@@ -63,6 +66,7 @@ M2 能为其中两项提供确定性依据：
 | block 不跨本地日 | 从源头消解一类 `BLOCK_TIME_INVALID` | `确定性与边界 · 排出来的块不跨自然日` |
 | `reason_code` 封闭枚举 | 「数据」判定项取值有限，C 可穷举校验 | `冻结目标守卫 · reason_code 取值必须落在封闭枚举内` |
 | `explanations` 元素恒为 `{code, message, related_task_ids?}` | 结构形状不会在合并时炸掉 | `冻结目标守卫 · explanations 元素结构统一` |
+| 时长第三级兜底恒为 `max(minimum_block_minutes, 30)`，且必标 `scheduler_estimate` | 既无任务目标也无快照估算时不会静默丢弃任务；估算也**不会**被误标成 `task_target` | `冻结目标守卫 · 时长兜底为 max(minimum_block_minutes, 30)，且一律算估算` |
 | `schedule_one_time` 必带同本地日 `scheduled_at` | 消除「写入成功但计划日期仍来自旧值」的假成功路径 | `冻结目标守卫 · 单次事项必须显式带与 planned_date 同日的 scheduled_at` |
 | `upsert_daily_override` 七字段齐全 + `0 <= start < 1440 < end <= 1440` + `item_type` 不含 course + `existing_override_id` 恒 null | 服务端回读不会因为提案侧缺字段而失败；也不靠猜 override id 制造重复记录 | `冻结目标守卫 · 单日例外变更字段齐全、分钟合法，且同一唯一键在提案内只出现一次` |
 | 同一提案内 `(item_type, item_id, local_date)` 与 `(task_id, planned_date)` 唯一 | 服务端的 `SNAPSHOT_CONFLICT` 只会被**并发**触发，不会被提案自撞触发；「写入次数」= `changes.length` 保持成立 | 同上用例 |

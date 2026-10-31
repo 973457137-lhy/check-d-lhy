@@ -194,6 +194,28 @@ M1 的 26/26（Mock 用例数）与 M2 的 29/29（纯函数用例数）不是�
 条款级复审结论（不涉及本机执行）见 `docs/scheduler/reviews/incremental-review-m2-state-machine.md`，
 本次四项定点核对的结论见 `docs/scheduler/reports/incremental-alignment-m2-2c48579.md`。
 
+### 2026-10-31 第二轮：契约基准扩为两份文件后的增量核对（同一 SHA `2c48579`）
+
+队长发布正式固定 SHA（与上轮推断一致），并把评审基准从一份扩成两份，新增
+`docs/contracts/agent-api-v1.examples.json`（687 行 / 20 个示例）。这是真正的增量：
+同一 commit 内 diff 为 0 行，靠 diff 助手查不出来。核对结论见
+`docs/scheduler/reports/incremental-alignment-m2-2c48579-examples.md`。
+
+**发现并修复一个我自己的实现缺陷（P1）**：契约 §5.6 的三级时长优先级里，第三级兜底是
+`max(preferences.minimum_block_minutes, 30)` 分钟；而 `_durationOf` 的注释早就写着
+「任务目标 > 快照估算 > 兜底」，代码却返回 **0**（等于静默丢弃该任务）——前几轮我自称
+「时长优先级已对齐」时只冻结了前两级。**已补齐**并加守卫用例（偏好 15 → 兜底 30；
+偏好 45 → 兜底 45；两者 `duration_source` 均为 `scheduler_estimate`）。
+
+结果：**30/30 通过**（隔离工程 `dart test`）。宿主 `flutter test` 仍因缺 Windows
+开发人员模式未复跑，不替它声称通过。历史 18/18、22/22、26/26、28/28、29/29 全部保留。
+
+另三项属待决策而非缺陷，已写入报告：**P2** `explanations[].code` 出现三套零交集词汇
+（md 无枚举 / 示例两个码在 md 里 0 次 / M2 八个码），在封闭枚举发布前不照抄示例；
+**P3** `remaining_minutes_today` 与 `scheduling_weight` 在示例文件中 0 次，缺可演示用例；
+**P4** 示例给出了含四个服务端字段的完整 Proposal 实例，把上轮「调度器输出过不了
+Schema required」从推论升级为对照实证。
+
 ### 2026-10-31 v1 CANDIDATE 对齐（`2c48579`）：纯文档，代码未动
 
 队长下发「七工具进 CANDIDATE / TTL 固定 30 分钟不按当日截断 / `token_issued` /

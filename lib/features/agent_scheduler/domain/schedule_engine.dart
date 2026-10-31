@@ -194,7 +194,8 @@ String _dayTag(DateTime instant) {
 
 /// 本次排程要用的时长。
 ///
-/// 契约第 5.6 节的优先级：**任务目标 > 服务端快照估算 > 兜底**。
+/// 契约第 5.6 节的优先级：**任务目标 > 服务端快照估算 > 兜底**，兜底值为
+/// `max(preferences.minimum_block_minutes, 30)` 分钟。
 /// 周期任务的目标由 `remaining_minutes_today` 折算：
 /// - 非空：当日剩余就是本次要排的量（已扣掉当天做完的部分）；
 /// - 为 0：当天不再排程（任务已完成），返回 `minutes = 0`，
@@ -203,8 +204,12 @@ String _dayTag(DateTime instant) {
 /// - 为空：按完整 `duration_target_seconds` 排。
 ///
 /// `fromTarget` 决定 `duration_source` 是 `task_target` 还是 `scheduler_estimate`；
-/// 调用方直接给出的时长一律算估算，不得伪装成任务固有属性。
-({int minutes, bool fromTarget}) _durationOf(ScheduleTaskDemand demand) {
+/// 只有任务目标算 `task_target`，快照估算与兜底一律算 `scheduler_estimate`，
+/// 不得伪装成任务固有属性。
+({int minutes, bool fromTarget}) _durationOf(
+  ScheduleTaskDemand demand,
+  ScheduleInput input,
+) {
   final remainingToday = demand.remainingMinutesToday;
   if (demand.taskKind == ScheduleTaskKind.recurring && remainingToday != null) {
     if (remainingToday <= 0) return (minutes: 0, fromTarget: true);
@@ -222,7 +227,10 @@ String _dayTag(DateTime instant) {
   if (demand.requiredMinutes > 0) {
     return (minutes: demand.requiredMinutes, fromTarget: false);
   }
-  return (minutes: 0, fromTarget: false);
+
+  // 兜底：既没有任务目标，也没有快照估算。
+  final minimum = input.preferences.minimumBlockMinutes;
+  return (minutes: minimum > 30 ? minimum : 30, fromTarget: false);
 }
 
 /// 在空闲片段中为一条需求找位置：最早可行优先，不拆分。
@@ -231,7 +239,7 @@ ProposedBlock? _placeDemand(
   ScheduleTaskDemand demand,
   ScheduleInput input,
 ) {
-  final duration = _durationOf(demand);
+  final duration = _durationOf(demand, input);
   if (duration.minutes <= 0) return null;
   final need = Duration(minutes: duration.minutes);
   for (final window in free) {
@@ -339,7 +347,7 @@ ScheduleProposal generateSchedule(ScheduleInput input) {
           .map(
             (demand) => _unplanned(
               demand,
-              _durationOf(demand).minutes,
+              _durationOf(demand, input).minutes,
               UnplannedReason.noAvailability,
               '没有开放任何时间窗口，请先设置可用时段。',
             ),
@@ -364,7 +372,7 @@ ScheduleProposal generateSchedule(ScheduleInput input) {
           .map(
             (demand) => _unplanned(
               demand,
-              _durationOf(demand).minutes,
+              _durationOf(demand, input).minutes,
               UnplannedReason.overlapsFixed,
               '开放时段已被课程或会议占满。',
             ),
@@ -378,7 +386,7 @@ ScheduleProposal generateSchedule(ScheduleInput input) {
   final unplanned = <UnplannedTask>[];
 
   for (final demand in ordered) {
-    final duration = _durationOf(demand);
+    final duration = _durationOf(demand, input);
 
     // remaining_minutes_today == 0 表示当天已经做完：既不排，也不记为未安排。
     if (duration.minutes == 0 &&
@@ -394,6 +402,8 @@ ScheduleProposal generateSchedule(ScheduleInput input) {
       continue;
     }
 
+    // 补上第三级兜底后，正常输入到不了这里（时长至少 30 分钟）。
+    // 保留作防御分支：若日后契约取消兜底、或上层显式给出非正值，仍不会静默丢弃。
     if (duration.minutes <= 0) {
       notes.add(
         ScheduleNote(
@@ -564,7 +574,7 @@ ScheduleProposal repairSchedule(
   });
 
   for (final demand in ordered) {
-    final durationMinutes = _durationOf(demand).minutes;
+    final durationMinutes = _durationOf(demand, input).minutes;
     if (durationMinutes <= 0) continue;
     final deadline = demand.deadline;
     if (deadline != null && deadline.isPast(input.now)) {

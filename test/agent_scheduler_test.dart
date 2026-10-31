@@ -715,6 +715,49 @@ void main() {
       );
     });
 
+    test('时长兜底为 max(minimum_block_minutes, 30)，且一律算估算', () {
+      ScheduleTaskDemand noDuration(String id) => ScheduleTaskDemand(
+        taskId: id,
+        title: '无目标也无估算：$id',
+        // 既没有 duration_target_seconds，服务端也没给估算。
+        requiredMinutes: 0,
+      );
+
+      // 偏好给 15 分钟，但契约第三级的地板值固定是 30 分钟。
+      final input = ScheduleInput(
+        now: _at(0, 8),
+        horizonStart: _at(0, 8),
+        horizonEnd: _at(0, 22),
+        baseVersion: 'v1',
+        availability: [ScheduleWindow(startAt: _at(0, 9), endAt: _at(0, 22))],
+        preferences: const SchedulePreferences(minimumBlockMinutes: 15),
+        demands: [noDuration('fallback-floor')],
+      );
+
+      final block = generateSchedule(input).blocks.single;
+      expect(
+        block.minutes,
+        30,
+        reason: '偏好低于 30 分钟时兜底仍取 30，契约第 5.6 节已写死该 floor',
+      );
+      expect(block.durationSource, 'scheduler_estimate');
+
+      // 偏好高于 30 分钟时按偏好值兜底。
+      final higher = ScheduleInput(
+        now: _at(0, 8),
+        horizonStart: _at(0, 8),
+        horizonEnd: _at(0, 22),
+        baseVersion: 'v1',
+        availability: [ScheduleWindow(startAt: _at(0, 9), endAt: _at(0, 22))],
+        preferences: const SchedulePreferences(minimumBlockMinutes: 45),
+        demands: [noDuration('fallback-higher')],
+      );
+
+      final blockHigher = generateSchedule(higher).blocks.single;
+      expect(blockHigher.minutes, 45);
+      expect(blockHigher.durationSource, 'scheduler_estimate');
+    });
+
     test('remaining_minutes_today 为 0 时不再排程，且不算未安排', () {
       final input = ScheduleInput(
         now: _at(0, 8),

@@ -10,17 +10,29 @@
 >
 > **本清单存在的意义**：新 SHA 到手后不再临时起意地"再看看全文"，只跑一遍固定的增量项，
 > 5 分钟出结论，其余一概不看。
+>
+> **2026-10-31 起契约基准是两份文件**，不再只有 md：
+> `docs/contracts/agent-api-v1.md` + `docs/contracts/agent-api-v1.examples.json`。
+> 守住一条纪律：**diff 结果为 0 行只能说明「这份文件内容没变」，
+> 不能说明「基准没变」**——文件清单本身的新增/删除 diff 查不出来，必须手动核过 `git ls-tree`。
 
 ## 零、三步流程
 
 ```bash
 cd /e/Projects/check-d-lhy
 git fetch upstream
+# 第 0 步：先确认契约文件清单本身没变（diff 查不出新增/删除文件）
+git ls-tree -r --name-only <新的固定SHA> | grep contracts
 bash docs/scheduler/tools/contract-diff-check.sh <新的固定SHA>
 ```
 
-脚本会直接给出六组 diff：**变更规模 / 错误码集合 / 工具清单 / 冻结关键字计数 /
-TTL 段落 / §5.6–§5.7 正文**。看它的输出，再对照下面的第 1–8 项逐条判。
+脚本会直接给出十组 diff：前六组针对 `agent-api-v1.md`（**变更规模 / 错误码集合 /
+工具清单 / 冻结关键字计数 / TTL 段落 / §5.6–§5.7 正文**），§7–§10 针对
+`agent-api-v1.examples.json`（**变更规模 / tools 清单 / 示例条目清单 / M2 关键字计数**）。
+看它的输出，再对照下面的第 1–8 项逐条判。
+
+> 如果某份契约文件被增删，脚本会明确打印「跳过：新旧 SHA 中至少一方没有这份示例文件」，
+> 看到这行就说明**基准变了**，不是「没变化」——别把它当成通过。
 
 > 如果 `[1] 变更规模` 显示 0 行 → **无需任何对齐**，只需要向 M0 确认一句
 > "这就是最终稿"（同一份文本在不同 SHA 下的重放也要留这句话，避免以后扯皮）。
@@ -33,10 +45,14 @@ TTL 段落 / §5.6–§5.7 正文**。看它的输出，再对照下面的第 1�
 | 2 | §6.x 工具清单 | **仍是七个工具**，无第 8 个，无工具改名 | 工具数或签名变了 → 此清单作废，需要重新评审（属重大变更） |
 | 3 | §6.5 `request_approval` | **答了 R1**：明确定义"未终结审批"集合（建议 `{pending, approved, token_issued 且 Token 未过期}`） | 不答 → `APPROVAL_EXPIRED` 之后死锁依旧，该码在「Token 过期后重走审批」这条路径上仍然不可达 | 
 | 4 | §6.7 `apply_approved_changes` 判定顺序 | 仍是 ①幂等记录 ②是否已 applied（换键→`ALREADY_APPLIED`）③Proposal TTL ④`base_version` ⑤Token | 顺序变动 → 「哪个错误码优先」的验收期望全部改写 |
+| 4b | §5.6 时长优先级第三级 | 兜底仍是 `max(preferences.minimum_block_minutes, 30)` | 改成别的值 → 我的守卫用例随之改；改成"不应由纯函数兜底" → 我把第三级删掉并让 `NO_VALID_DURATION` 重新生效 |
 | 5 | §6.7 换幂等键 + 中间态 | **补了 X1**：Proposal 处于 `applying`/`readback_pending` 时换幂等键一律零写入 | 不补 → 唯一一条可能二次写入的通道仍然存在 |
 | 6 | §5.7 / §7.1 TTL | Proposal 固定 30 分钟、**不按当日 23:59 截断**；Token 5 分钟且不得越过 `expires_at` | 出现任何"当日截断"口径 → 引用我已作废的旧建议并再退一次 |
 | 7 | §5.2 / §5.6 排程输入 | `remaining_minutes_today` 三态语义不变；`scheduling_weight` 仍 BLOCKED 或明确"由服务端折算后给 M2" | 若要求 M2 直接消费 BLOCKED 的 weight → 声明不可接受（会让输出不可复现） |
 | 8 | §5.7 `input_digest` 范围 | 是否纳入 **horizon 与时区** | 不纳入 → 同一 digest 不同 horizon 会产出不同提案而 validate 察觉不到 |
+| 9 | `examples.json` 示例条目清单 | 脚本 §9 报出新增/删除/改名的示例名，逐个判落在谁的边界（属 A/C 的不碰） | 新增 `generate_schedule` 相关示例 → 必须重跑 M2 输出对照，不能只看 md |
+| 10 | `examples.json` 里的 `explanations[].code` | M0 是否已给出**封闭枚举**，且示例取值落在该枚举内 | 仍是「md 无枚举 + 示例自造码 + M2 自造码」三套零交集 → P2 继续挂起，我不照抄示例 |
+| 11 | `examples.json` 里的完整 Proposal 实例 | 是否仍含 `snapshot_ref`/`input_digest`/`generated_at`/`expires_at` 四个服务端字段 | 若契约改为「不含它们也能过 Schema」→ P4 自动消解；否则坚持要写明序列化职责归属 |
 
 ## 二、M2 会跟着改代码的「红线信号」（命中才有事做）
 

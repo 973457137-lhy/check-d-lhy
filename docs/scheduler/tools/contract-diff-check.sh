@@ -14,6 +14,7 @@ set -uo pipefail
 
 BASE_SHA="2c48579"
 CONTRACT_FILE="docs/contracts/agent-api-v1.md"
+EXAMPLES_FILE="docs/contracts/agent-api-v1.examples.json"
 NEW_SHA="${1:-}"
 
 if [[ -z "$NEW_SHA" ]]; then
@@ -106,6 +107,63 @@ echo "[6] M2 输出直接相关的章节：§5.6 / §5.7"
 diff <(sed -n '/^### 5.6/,/^## 6\./p' "$OLD_FILE") \
      <(sed -n '/^### 5.6/,/^## 6\./p' "$NEW_FILE") \
   | grep '^[<>]' | sed 's/^/    /' || true
+
+echo
+echo "[7] 示例文件 ${EXAMPLES_FILE}"
+if git cat-file -e "${BASE_SHA}:${EXAMPLES_FILE}" 2>/dev/null &&
+  git cat-file -e "${NEW_SHA}:${EXAMPLES_FILE}" 2>/dev/null; then
+  OLD_EX="$TMP_DIR/old.json"
+  NEW_EX="$TMP_DIR/new.json"
+  git show "${BASE_SHA}:${EXAMPLES_FILE}" > "$OLD_EX"
+  git show "${NEW_SHA}:${EXAMPLES_FILE}" > "$NEW_EX"
+
+  ExAdded=$(diff "$OLD_EX" "$NEW_EX" | grep -c '^>')
+  ExRemoved=$(diff "$OLD_EX" "$NEW_EX" | grep -c '^<')
+  echo "    变更规模：新增 ${ExAdded} 行 / 删除 ${ExRemoved} 行"
+
+  echo
+  echo "[8] 示例文件：tools 清单变化"
+  diff <(grep -oP '"\K(list_tasks|get_calendar_events|generate_schedule|validate_schedule|request_approval|get_approval_status|apply_approved_changes)(?=")' "$OLD_EX" | sort -u) \
+    <(grep -oP '"\K(list_tasks|get_calendar_events|generate_schedule|validate_schedule|request_approval|get_approval_status|apply_approved_changes)(?=")' "$NEW_EX" | sort -u) \
+    | grep '^[<>]' | sed 's/^/    /' || true
+
+  echo
+  echo "[9] 示例文件：示例条目清单变化（新增/删除/改名都会列出来）"
+  diff <(grep -oP '"name": "\K[a-z0-9_]+' "$OLD_EX") \
+    <(grep -oP '"name": "\K[a-z0-9_]+' "$NEW_EX") \
+    | grep '^[<>]' | sed 's/^/    /' || true
+
+  echo
+  echo "[10] 示例文件：M2 相关关键字计数变化（有变化才列出，含本轮新盯的字段）"
+  EX_KEYWORDS=(
+    'duration_target_seconds'
+    'remaining_minutes_today'
+    'scheduling_weight'
+    'minimum_block_minutes'
+    'duration_source'
+    'task_target'
+    'scheduler_estimate'
+    'scheduled_at'
+    'planned_date'
+    'reason_code'
+    'related_task_ids'
+    'explanations'
+    'unplanned_tasks'
+    'applied_changes'
+    'readback_verified'
+    'input_digest'
+  )
+  for kw in "${EX_KEYWORDS[@]}"; do
+    before=$(grep -c -- "$kw" "$OLD_EX" || true)
+    after=$(grep -c -- "$kw" "$NEW_EX" || true)
+    if [[ "$before" != "$after" ]]; then
+      echo "    ${kw}: ${before} → ${after}"
+    fi
+  done
+else
+  echo "    跳过：新旧 SHA 中至少一方没有这份示例文件。"
+  echo "    若 M0 后续增删契约文件清单，这里会提醒基准已失效而非静默通过。"
+fi
 
 echo
 echo "=============================================="

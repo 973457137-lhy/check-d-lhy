@@ -15,7 +15,7 @@
 |---|---|---|---|---|
 | 1 | `remaining_minutes_today` | 未取用（`ScheduleTaskDemand` 内暂无此字段） | 否 | 字段归属与缺省语义 |
 | 2 | `scheduling_weight` | 未取用（当前只用 `priority` 排序） | 否 | 取值区间与是否参与硬性排序 |
-| 3 | 时长优先级 | **已实现并测试通过** | 否（用现有 `targetDurationSeconds`） | 是否还要区分「快照估算」形态 |
+| 3 | 时长优先级 | **已实现并测试通过**，三级齐备 | 否（用现有 `targetDurationSeconds`） | 第三级兜底是否该由服务端快照负责，见下方 |
 | 4 | 周期任务单日最多一个 block | **结构上已满足**（一条需求最多一个 block，不拆分） | 否 | 在哪一侧兜底去重 |
 | 5 | block 不跨本地日 | **已实现并测试通过**（含 2026-10-31 修复） | 否 | 是否写进契约硬约束供 validate 静态检查 |
 | 6 | `reason_code` 枚举 | **已在 M2 内冻结为 4 个值**（见下） | 否 | 取值文案是否与 C 的验收表一致 |
@@ -29,7 +29,7 @@
 |---|---|
 | 1 | **已实现**：`ScheduleTaskDemand.remainingMinutesToday`，三态（0 / 非 0 / null）均有测试 |
 | 2 | **保持不接入**：契约自标 `scheduling_weight` 算法 BLOCKED，建议由服务端折算成 `priority` 或 demand 顺序 |
-| 7 | **契约已定**：对象数组每项 `{code, message, related_task_ids?}`，字符串形式废弃；M2 已对齐并有测试。**待 M0 给 `explanations[].code` 的枚举** |
+| 7 | **契约已定**：对象数组每项 `{code, message, related_task_ids?}`，字符串形式废弃；M2 已对齐并有测试。**待 M0 给 `explanations[].code` 的枚举** —— 本轮核示例文件后发现是**三套零交集的词汇**：md §5.7 一个取值都没枚举；示例用了 `PRESERVED_FIXED_EVENTS` / `ESTIMATED_DURATION`（在 md 全文出现 0 次）；M2 自己的码又是另外 8 个。在封闭枚举发布前，**不照抄示例、不假装已对齐** |
 
 > 第 7 条正文里的 `{task_id, text}` 是当时的候选方案，已废弃；实际输出以
 > `schedule_contract.dart` 的 `ScheduleNote.toJson()` 与契约 §5.7 为准。
@@ -55,18 +55,25 @@
 
 ### 3. 时长优先级
 
-已在 `schedule_engine.dart` 落地（函数 `_demandMinutes`）：
+已在 `schedule_engine.dart` 落地（函数 `_durationOf`）：
 
 ```
-非空且 > 0 的 targetDurationSeconds   → 向上取整到分钟（标 task_target）
-否则 requiredMinutes                → 调用方给的时长
-快照估算（若 M0 提供）               → 第三级，标 scheduler_estimate
-兜底                                → max(minimum_block_minutes, 30)
+周期任务 remaining_minutes_today 非空 → 它就是本次要排的量（标 task_target）
+  其中 = 0 表示当天已做完 → 不排程，也不计入 unplanned_tasks
+非空且 > 0 的 targetDurationSeconds  → 向上取整到分钟（标 task_target）
+否则 requiredMinutes > 0            → 服务端快照估算（标 scheduler_estimate）
+兜底                                → max(minimum_block_minutes, 30)（标 scheduler_estimate）
 ```
 
 - **绝不压缩**：放不下就进 `unplanned_tasks`，不为排满而缩短时长。
 - **不写回**：估算值不落任何 Task 持久化字段。
-- **测试**：`冻结目标守卫 · 时长优先级`，目标 1800 秒 vs 入参 60 分钟 → 排 30 分钟且标 `task_target`。
+- **测试**：`冻结目标守卫 · 时长优先级`（目标 1800 秒 vs 入参 60 分钟 → 排 30 分钟且标
+  `task_target`）；`冻结目标守卫 · 时长兜底为 max(minimum_block_minutes, 30)，且一律算估算`
+  （偏好 15 → 兜底 30；偏好 45 → 兜底 45，两者都标 `scheduler_estimate`）。
+
+> **2026-10-31 更正**：最后一行「兜底」此前**只写在文档里，`_durationOf` 实际返回 0**
+> （等于静默丢弃该任务）。本轮核 `agent-api-v1.examples.json` 时发现这个落差并补齐。
+> 副作用：`NO_VALID_DURATION`（时长非正即跳过）现已成为不可达的防御分支，代码里已注明。
 
 ### 4. 周期任务单日最多一个 block
 
