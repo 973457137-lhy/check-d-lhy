@@ -126,4 +126,5 @@ M0 契约、任何他人文件。
 
 ## 五、提交
 
-提交 `feat/m2-scheduler-basic`，SHA 见文末签名行，已推送。
+- 代码与测试提交：**`d8a5ab96698d279d593c023f35a6b9cb0834b456`**（已推 `feat/m2-scheduler-basic`，PR #2 自动更新）。
+- 本报告 SHA 回填属文档微调，追加在下一提交。
