@@ -66,6 +66,7 @@ M2 能为其中两项提供确定性依据：
 | `schedule_one_time` 必带同本地日 `scheduled_at` | 消除「写入成功但计划日期仍来自旧值」的假成功路径 | `冻结目标守卫 · 单次事项必须显式带与 planned_date 同日的 scheduled_at` |
 | `upsert_daily_override` 七字段齐全 + `0 <= start < 1440 < end <= 1440` + `item_type` 不含 course + `existing_override_id` 恒 null | 服务端回读不会因为提案侧缺字段而失败；也不靠猜 override id 制造重复记录 | `冻结目标守卫 · 单日例外变更字段齐全、分钟合法，且同一唯一键在提案内只出现一次` |
 | 同一提案内 `(item_type, item_id, local_date)` 与 `(task_id, planned_date)` 唯一 | 服务端的 `SNAPSHOT_CONFLICT` 只会被**并发**触发，不会被提案自撞触发；「写入次数」= `changes.length` 保持成立 | 同上用例 |
+| 五个输出对象的 JSON 键集合与契约逐字相等 | 「数据」判定项不需要猜：多一个键（如曾经的 `minutes`）或少一个键都会立刻红 | `冻结目标守卫 · DTO 键集合与契约逐字对齐：不多不少，服务端字段除外` |
 
 ## 四、C 的 Proposal / Approval 增量复审清单（10 项）判定
 

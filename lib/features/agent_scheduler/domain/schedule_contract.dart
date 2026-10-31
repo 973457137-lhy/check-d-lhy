@@ -509,9 +509,12 @@ class UnplannedTask {
   final UnplannedReason reason;
   final String reasonText;
 
+  /// 契约第 5.7 节要求每项至少含 `task_id`、`reason_code`、`remaining_minutes`
+  /// 与 `message`。这里的键集合被限制为恰好这四项：
+  /// `title` 保留在 Dart 对象里供进程内展示使用，但不进 JSON——
+  /// 契约没有列出它，`additionalProperties: false` 时会整份提案被拒。
   Map<String, dynamic> toJson() => {
     'task_id': taskId,
-    'title': title,
     'remaining_minutes': remainingMinutes,
     'reason_code': reason.code,
     'message': reasonText,

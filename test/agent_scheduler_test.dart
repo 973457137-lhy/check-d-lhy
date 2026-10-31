@@ -881,6 +881,152 @@ void main() {
       expect(proposal.changes.single.toJson()['change_id'], isNotNull);
     });
 
+    test('DTO 键集合与契约逐字对齐：不多不少，服务端字段除外', () {
+      final input = ScheduleInput(
+        now: _at(0, 8),
+        horizonStart: _at(0, 8),
+        horizonEnd: _at(0, 22),
+        baseVersion: 'v1',
+        availability: [
+          ScheduleWindow(startAt: _at(0, 9), endAt: _at(0, 10)),
+        ],
+        fixedBlocks: [
+          ScheduleFixedBlock(
+            ownerId: 'course-x',
+            ownerType: ScheduleOwnerType.course,
+            startAt: _at(0, 10),
+            endAt: _at(0, 12),
+            title: '编译原理',
+          ),
+          ScheduleFixedBlock(
+            ownerId: 'event-y',
+            ownerType: ScheduleOwnerType.event,
+            startAt: _at(0, 11),
+            endAt: _at(0, 13),
+            title: '临时会议',
+          ),
+        ],
+        demands: [
+          ScheduleTaskDemand(
+            taskId: 'recurring-dto',
+            title: '周期：每日练琴',
+            requiredMinutes: 20,
+            taskKind: ScheduleTaskKind.recurring,
+          ),
+          ScheduleTaskDemand(
+            taskId: 'onetime-dto',
+            title: '单次：体检',
+            requiredMinutes: 20,
+            taskKind: ScheduleTaskKind.oneTime,
+          ),
+          // 这个必然排不下，用来检查 unplanned_tasks 的形状。
+          ScheduleTaskDemand(
+            taskId: 'recurring-too-long',
+            title: '周期：写大论文',
+            requiredMinutes: 600,
+            taskKind: ScheduleTaskKind.recurring,
+          ),
+        ],
+      );
+
+      final proposal = generateSchedule(input);
+      final json = jsonDecode(jsonEncode(proposal.toJson())) as Map<String, dynamic>;
+
+      // 顶层：必须 §5.7 列出的字段，且不得出现契约外的键。
+      // generated_at / expires_at / snapshot_ref / input_digest 属服务端
+      // （「服务端不得接受客户端指定或延长该 TTL」），M2 一律不构造。
+      const allowedTopLevelKeys = <String>{
+        'proposal_id',
+        'snapshot_ref',
+        'base_version',
+        'input_digest',
+        'status',
+        'generated_at',
+        'expires_at',
+        'blocks',
+        'changes',
+        'unplanned_tasks',
+        'explanations',
+      };
+      for (final key in json.keys) {
+        expect(allowedTopLevelKeys, contains(key),
+            reason: '契约第 5.7 节未列出顶层字段：$key');
+      }
+      for (final key in const [
+        'proposal_id',
+        'base_version',
+        'status',
+        'blocks',
+        'changes',
+        'unplanned_tasks',
+        'explanations',
+      ]) {
+        expect(json.containsKey(key), isTrue, reason: '缺少契约字段 $key');
+      }
+
+      // 展示块：§5.6 的九个字段，一个不多一个不少。
+      const expectedBlockKeys = <String>{
+        'block_id',
+        'task_id',
+        'task_kind',
+        'start_at',
+        'end_at',
+        'source',
+        'persistable_as',
+        'duration_source',
+        'duration_seconds',
+      };
+      final blocks = json['blocks'] as List<dynamic>;
+      expect(blocks, isNotEmpty);
+      for (final item in blocks) {
+        expect((item as Map<String, dynamic>).keys.toSet(), expectedBlockKeys);
+      }
+
+      // 两种白名单 change 的键集合分别严格相等。
+      final changes = json['changes'] as List<dynamic>;
+      expect(changes, isNotEmpty);
+      for (final item in changes) {
+        final map = item as Map<String, dynamic>;
+        final keys = map.keys.toSet();
+        if (map['type'] == 'schedule_one_time') {
+          expect(keys, {'change_id', 'type', 'task_id', 'planned_date', 'scheduled_at'});
+        } else {
+          expect(keys, {
+            'change_id',
+            'type',
+            'item_type',
+            'item_id',
+            'local_date',
+            'action',
+            'planned_start_minute',
+            'planned_end_minute',
+          });
+        }
+      }
+
+      // 未安排项：§5.7 只允许这四个键，`title` 不得混进 JSON。
+      final unplanned = json['unplanned_tasks'] as List<dynamic>;
+      expect(unplanned, isNotEmpty);
+      for (final item in unplanned) {
+        expect(
+          (item as Map<String, dynamic>).keys.toSet(),
+          {'task_id', 'remaining_minutes', 'reason_code', 'message'},
+        );
+      }
+
+      // 解释：对象数组，键集合 ⊆ {code, message, related_task_ids}。
+      final explanations = json['explanations'] as List<dynamic>;
+      expect(explanations, isNotEmpty);
+      for (final item in explanations) {
+        final map = item as Map<String, dynamic>;
+        for (final key in map.keys) {
+          expect({'code', 'message', 'related_task_ids'}, contains(key));
+        }
+        expect(map.containsKey('code'), isTrue);
+        expect(map.containsKey('message'), isTrue);
+      }
+    });
+
     test('单次事项必须显式带与 planned_date 同日的 scheduled_at', () {
       final input = ScheduleInput(
         now: _at(0, 8),

@@ -171,7 +171,28 @@ Horolog 的取舍记录见上文第 1 节；截至本文档日期，未引入、
 结果：**28/28 通过**。宿主工程 `flutter test` 依旧没有复跑（同 §8 开头的原因），
 本机证据只有隔离工程的 Dart VM 通道，不夸大为工程内已验证。
 
-条款级复审结论（不涉及本机执行）见 `docs/scheduler/reviews/incremental-review-m2-state-machine.md`。
+### 2026-10-31 第五轮：29/29 通过（DTO 键集合锁定）
+
+同一环境。以 M0 Task 1 固定 SHA `2c48579a6f0ab2b9181a9246f893c1c0a8dce7c6` 为唯一基准，
+做「调度 DTO / 快照引用 / 时间语义 / Proposal 输出」四项定点核对时新增 1 个守卫：
+
+1. 五个输出对象的 **JSON 键集合严格对齐契约**：`schedule_block` 九个键、
+   `schedule_one_time` 五个键、`upsert_daily_override` 八个键、
+   `unplanned_tasks` 四个键、`explanations ⊆ {code, message, related_task_ids}`。
+   顶层字段只允许落在 §5.7 列表内。
+   附带修正：`unplanned_tasks` 原来多输出一个契约外的 `title`，已移除
+   （Dart 对象仍保留 `title` 供进程内展示，只是不进 JSON）。
+
+结果：**29/29 通过**。宿主 `flutter test` 依旧未复跑（原因同 §8 开头），本机证据只有隔离工程
+的 Dart VM 通道。历史数字 18/18、22/22、26/26、28/28 全部保留，不合并、不覆盖。
+
+明确的局限（不假装支持）：M2 内部直接用 Dart `DateTime`、**不做时区转换**，
+假设服务端传入的已是 Asia/Shanghai 本地时间；时区处理是上游 M0 的职责。
+
+M1 的 26/26（Mock 用例数）与 M2 的 29/29（纯函数用例数）不是同一个东西，汇报时不合并。
+
+条款级复审结论（不涉及本机执行）见 `docs/scheduler/reviews/incremental-review-m2-state-machine.md`，
+本次四项定点核对的结论见 `docs/scheduler/reports/incremental-alignment-m2-2c48579.md`。
 
 ### 2026-10-31 v1 CANDIDATE 对齐（`2c48579`）：纯文档，代码未动
 
