@@ -194,6 +194,34 @@ M1 的 26/26（Mock 用例数）与 M2 的 29/29（纯函数用例数）不是�
 条款级复审结论（不涉及本机执行）见 `docs/scheduler/reviews/incremental-review-m2-state-machine.md`，
 本次四项定点核对的结论见 `docs/scheduler/reports/incremental-alignment-m2-2c48579.md`。
 
+### 2026-10-31 第三轮：按 M0 正式决定做增量修订
+
+队长转达 M0 的五项决定后执行（详单见
+`docs/scheduler/reports/revision-2026-10-31-m0-decisions.md`）：
+
+- **P1** 保留 `max(minimum_block_minutes, 30)` 兜底；`requiredMinutes` 明确只接受服务端可信
+  快照估算、不接受 LLM 的伪可信估算；`remaining_minutes_today = 0` 仍为特殊情况、不进兜底。
+- **P2** v1 公共 `explanations[].code` 枚举封闭为 7 个，写进代码
+  （`kPublicExplanationCodes`）；`NO_VALID_DURATION` 整段删除；`DISPLACED_BY_FIXED` /
+  `REPAIR_SUMMARY` 登记为 repair 专用（`kRepairOnlyExplanationCodes` + `isPublic` +
+  `publicExplanations`）。按"不要只改一侧"的要求，同时补上了 M2 原先缺失的
+  `PRESERVED_FIXED_EVENTS` 与 `ESTIMATED_DURATION` 产出。
+- **P3** 两个服务端内部快照样例落成用例（`= 0` 不排且不进 unplanned、产出
+  `ALREADY_DONE_TODAY`；`= 40` 时只排 40 分钟且标 `task_target`）。
+- **P4** 选方案 A：**M2 停止自行派生 `proposal_id`**（原先由 baseVersion + 任务 ID 拼出，
+  属"自行生成服务端字段"），已整段删除；`base_version` 仅原样带回；
+  `snapshot_ref`/`input_digest`/`generated_at`/`expires_at` 一如既往不构造。
+- **五·3** 补了可执行证据：只改 `horizonEnd` 输出就不同，故 `input_digest` 必须覆盖 horizon。
+
+结果：**35/35 通过**（隔离工程 `dart test`）。
+历史 18/18、22/22、26/26、28/28、29/29、30/30 全部保留。
+
+**宿主工程 `flutter test` 本轮实测（与代码无关）**：卡在原生资产构建，
+`sqlite3` 的 hook 要下载 `sqlite3.x64.windows.dll`，本机代理返回 502，
+**一行测试都没执行**。此前记录的原因是"插件 symlink / 开发人员模式"，
+本轮实测的失败点已变；两者都成立、都不归代码。尝试期间被自动改写的
+`GeneratedPluginRegistrant.swift` 与 `windows/flutter/generated_*.{cc,h,cmake}` 已还原。
+
 ### 2026-10-31 第二轮：契约基准扩为两份文件后的增量核对（同一 SHA `2c48579`）
 
 队长发布正式固定 SHA（与上轮推断一致），并把评审基准从一份扩成两份，新增

@@ -37,6 +37,16 @@ bash docs/scheduler/tools/contract-diff-check.sh <新的固定SHA>
 > 如果 `[1] 变更规模` 显示 0 行 → **无需任何对齐**，只需要向 M0 确认一句
 > "这就是最终稿"（同一份文本在不同 SHA 下的重放也要留这句话，避免以后扯皮）。
 
+## 零之二、本轮已由 M0 决定、只需核对「是否真写进契约」的条目
+
+| 项 | M0 的决定 | 新 SHA 到手后我要做的 |
+|---|---|---|
+| R1 | Token 过期 → 旧审批终结；Proposal 未过期可重建 `approval_id` | 只看 §6.5 是否真写了「未终结」集合；没写 → 退回 |
+| X1 | `applying`/`readback_pending` 下任何新幂等键 → `READBACK_PENDING` + 零写入 | 只看 §6.7；没写 → 退回 |
+| `input_digest` | 覆盖 horizon 起止与 Asia/Shanghai 时区 | 只看 §5.7；M2 侧已给出「只改 horizon 输出就不同」的证据 |
+| 状态机 | 补 Approval 迁移图、组合表、过期边界、`readback_pending` 恢复路径 | 只看 §5.7 图与 §6.6/§6.7 口径；缺哪项退回哪项 |
+| Proposal 序列化 | **方案 A**：服务端序列化，M2 不输出 `proposal_id` 等服务端字段 | 若契约改选方案 B，我再改一次 DTO |
+
 ## 一、只看这 8 项
 
 | # | 看契约哪一节 | 判据（通过的样子） | 不通过怎么办 |

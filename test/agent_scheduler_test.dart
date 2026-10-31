@@ -358,7 +358,6 @@ void main() {
       final second = generateSchedule(input);
 
       expect(jsonEncode(first.toJson()), jsonEncode(second.toJson()));
-      expect(first.proposalId, second.proposalId);
     });
 
     test('排出来的块不跨自然日', () {
@@ -400,7 +399,6 @@ void main() {
   group('repairSchedule 最小扰动重排', () {
     test('插入会议只移动冲突的柔性块', () {
       final previous = ScheduleProposal(
-        proposalId: 'gen-v1',
         baseVersion: 'v1',
         blocks: [
           ProposedBlock(
@@ -465,7 +463,6 @@ void main() {
 
     test('无可排位置时返回未安排量与理由', () {
       final previous = ScheduleProposal(
-        proposalId: 'gen-v1',
         baseVersion: 'v1',
         blocks: [
           ProposedBlock(
@@ -507,7 +504,6 @@ void main() {
 
     test('上一版未排进去的任务在重排时会被重新尝试', () {
       final previous = ScheduleProposal(
-        proposalId: 'gen-v1',
         baseVersion: 'v1',
         unplannedTasks: [
           UnplannedTask(
@@ -597,7 +593,6 @@ void main() {
     test('提案 JSON 字段与契约第 5.7 节一致', () {
       final json = generateSchedule(mixedInput()).toJson();
 
-      expect(json['proposal_id'], isA<String>());
       expect(json['status'], 'draft');
       for (final key in [
         'blocks',
@@ -815,6 +810,163 @@ void main() {
       expect(block.durationSource, 'task_target');
     });
 
+    test('P3 样例一：remaining_minutes_today=0 不排程、不算未安排、产出 ALREADY_DONE_TODAY', () {
+      final input = ScheduleInput(
+        now: _at(0, 8),
+        horizonStart: _at(0, 8),
+        horizonEnd: _at(0, 22),
+        baseVersion: 'v1',
+        availability: [ScheduleWindow(startAt: _at(0, 9), endAt: _at(0, 22))],
+        demands: [
+          ScheduleTaskDemand(
+            taskId: 'done-today',
+            title: '背单词',
+            // 完整目标 120 分钟，但当天已经做完。
+            requiredMinutes: 120,
+            targetDurationSeconds: 7200,
+            remainingMinutesToday: 0,
+            taskKind: ScheduleTaskKind.recurring,
+          ),
+        ],
+      );
+
+      final proposal = generateSchedule(input);
+      final codes = proposal.notes.map((note) => note.code).toList();
+
+      expect(proposal.blocks, isEmpty);
+      expect(proposal.unplannedTasks, isEmpty);
+      expect(codes, contains('ALREADY_DONE_TODAY'));
+      expect(kPublicExplanationCodes, contains('ALREADY_DONE_TODAY'));
+      // = 0 是「已做完」而非「没有时长依据」，绝不能落到兜底去排 30 分钟。
+      expect(codes, isNot(contains('SCHEDULED')));
+      expect(codes, isNot(contains('ESTIMATED_DURATION')));
+    });
+
+    test('P3 样例二：remaining_minutes_today=40 时只排 40 分钟且标 task_target', () {
+      final input = ScheduleInput(
+        now: _at(0, 8),
+        horizonStart: _at(0, 8),
+        horizonEnd: _at(0, 22),
+        baseVersion: 'v1',
+        availability: [ScheduleWindow(startAt: _at(0, 9), endAt: _at(0, 22))],
+        demands: [
+          ScheduleTaskDemand(
+            taskId: 'partial-done',
+            title: '刷题',
+            // 完整目标 120 分钟、快照估算 120 分钟，但当天只剩 40 分钟。
+            requiredMinutes: 120,
+            targetDurationSeconds: 7200,
+            remainingMinutesToday: 40,
+            taskKind: ScheduleTaskKind.recurring,
+          ),
+        ],
+      );
+
+      final proposal = generateSchedule(input);
+      final block = proposal.blocks.single;
+
+      expect(block.minutes, 40);
+      expect(block.durationSource, 'task_target');
+    });
+
+    test('horizon 起止会改变输出，因此 input_digest 必须覆盖它', () {
+      ScheduleInput build(DateTime horizonEnd) => ScheduleInput(
+        now: _at(0, 8),
+        horizonStart: _at(0, 8),
+        horizonEnd: horizonEnd,
+        baseVersion: 'v1',
+        availability: [ScheduleWindow(startAt: _at(0, 9), endAt: _at(0, 22))],
+        demands: [
+          ScheduleTaskDemand(taskId: 'a', title: '任务甲', requiredMinutes: 60),
+          ScheduleTaskDemand(taskId: 'b', title: '任务乙', requiredMinutes: 60),
+          ScheduleTaskDemand(taskId: 'c', title: '任务丙', requiredMinutes: 60),
+        ],
+      );
+
+      // 窄 horizon 只到 10:30：三条 60 分钟需求里只有第一条排得下。
+      final narrow = generateSchedule(build(_at(0, 10, 30)));
+      final wide = generateSchedule(build(_at(0, 22)));
+
+      // 只差 horizonEnd，输出就不同 —— 摘要不覆盖 horizon 的话，
+      // 两个不同提案会拿到同一个 input_digest，validate 察觉不到。
+      expect(jsonEncode(narrow.toJson()), isNot(jsonEncode(wide.toJson())));
+      expect(wide.blocks.length, greaterThan(narrow.blocks.length));
+    });
+
+    test('时区只作为可规范化字段携带，M2 不做时区转换', () {
+      final input = ScheduleInput(
+        now: _at(0, 8),
+        horizonStart: _at(0, 8),
+        horizonEnd: _at(0, 22),
+        baseVersion: 'v1',
+        availability: [ScheduleWindow(startAt: _at(0, 9), endAt: _at(0, 12))],
+        demands: [
+          ScheduleTaskDemand(taskId: 'tz', title: '时区用例', requiredMinutes: 30),
+        ],
+      );
+
+      // 契约要求的时区标识在输入上，服务端规范化摘要时要把它算进去。
+      expect(input.timezone, 'Asia/Shanghai');
+      // 如实标注局限：M2 直接用 Dart DateTime，不转换时区，
+      // 假设服务端传入的已是 +08:00。时区解析归 M0。
+      expect(generateSchedule(input).blocks.single.startAt, _at(0, 9));
+    });
+
+    test('explanations 码必须落在 v1 公共枚举内，repair 专用码不得外泄', () {
+      final input = ScheduleInput(
+        now: _at(0, 8),
+        horizonStart: _at(0, 8),
+        horizonEnd: _at(0, 22),
+        baseVersion: 'v1',
+        availability: [ScheduleWindow(startAt: _at(0, 9), endAt: _at(0, 22))],
+        fixedBlocks: [
+          ScheduleFixedBlock(
+            ownerId: 'course-x',
+            ownerType: ScheduleOwnerType.course,
+            startAt: _at(0, 10),
+            endAt: _at(0, 12),
+            title: '编译原理',
+          ),
+        ],
+        demands: [
+          // 无目标无估算 → 走第三级兜底，必然带 ESTIMATED_DURATION。
+          ScheduleTaskDemand(taskId: 'estimated', title: '整理笔记', requiredMinutes: 0),
+        ],
+      );
+
+      final proposal = generateSchedule(input);
+
+      // generateSchedule 的每一条解释都必须能进 v1 远程响应。
+      expect(proposal.notes, isNotEmpty);
+      for (final note in proposal.notes) {
+        expect(
+          note.isPublic,
+          isTrue,
+          reason: '${note.code} 不在 v1 公共枚举内，服务端必须过滤或补进枚举',
+        );
+      }
+      // 这次输入必然覆盖到枚举里的两个「新」码。
+      final codes = proposal.notes.map((note) => note.code).toList();
+      expect(codes, contains('PRESERVED_FIXED_EVENTS'));
+      expect(codes, contains('ESTIMATED_DURATION'));
+
+      // repair 结果允许带 repair 专用码，但只允许那两个。
+      final repaired = repairSchedule(input, proposal);
+      for (final note in repaired.notes) {
+        expect(
+          note.isPublic || kRepairOnlyExplanationCodes.contains(note.code),
+          isTrue,
+          reason: '${note.code} 既不是公共码也不是已登记的 repair 专用码',
+        );
+      }
+
+      // 服务端按 publicExplanations 序列化时，repair 专用码被滤掉。
+      final publicCodes = repaired.publicExplanations.map((note) => note.code);
+      for (final code in kRepairOnlyExplanationCodes) {
+        expect(publicCodes, isNot(contains(code)));
+      }
+    });
+
     test('未安排项带 reason_code、remaining_minutes 与 message', () {
       final input = ScheduleInput(
         now: _at(0, 8),
@@ -979,7 +1131,6 @@ void main() {
       // generated_at / expires_at / snapshot_ref / input_digest 属服务端
       // （「服务端不得接受客户端指定或延长该 TTL」），M2 一律不构造。
       const allowedTopLevelKeys = <String>{
-        'proposal_id',
         'snapshot_ref',
         'base_version',
         'input_digest',
@@ -996,7 +1147,6 @@ void main() {
             reason: '契约第 5.7 节未列出顶层字段：$key');
       }
       for (final key in const [
-        'proposal_id',
         'base_version',
         'status',
         'blocks',

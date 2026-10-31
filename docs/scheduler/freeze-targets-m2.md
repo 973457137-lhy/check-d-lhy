@@ -29,7 +29,7 @@
 |---|---|
 | 1 | **已实现**：`ScheduleTaskDemand.remainingMinutesToday`，三态（0 / 非 0 / null）均有测试 |
 | 2 | **保持不接入**：契约自标 `scheduling_weight` 算法 BLOCKED，建议由服务端折算成 `priority` 或 demand 顺序 |
-| 7 | **契约已定**：对象数组每项 `{code, message, related_task_ids?}`，字符串形式废弃；M2 已对齐并有测试。**待 M0 给 `explanations[].code` 的枚举** —— 本轮核示例文件后发现是**三套零交集的词汇**：md §5.7 一个取值都没枚举；示例用了 `PRESERVED_FIXED_EVENTS` / `ESTIMATED_DURATION`（在 md 全文出现 0 次）；M2 自己的码又是另外 8 个。在封闭枚举发布前，**不照抄示例、不假装已对齐** |
+| 7 | **枚举已封闭（M0 2026-10-31 决定）**：`PRESERVED_FIXED_EVENTS` `ESTIMATED_DURATION` `FIXED_BLOCKS_OVERLAP` `NO_AVAILABILITY_WINDOW` `AVAILABILITY_SATURATED` `ALREADY_DONE_TODAY` `SCHEDULED` 七个公共码写进 `kPublicExplanationCodes`；`NO_VALID_DURATION` 已删除；`DISPLACED_BY_FIXED`/`REPAIR_SUMMARY` 登记为 repair 专用，不得进 v1 远程响应 |
 
 > 第 7 条正文里的 `{task_id, text}` 是当时的候选方案，已废弃；实际输出以
 > `schedule_contract.dart` 的 `ScheduleNote.toJson()` 与契约 §5.7 为准。

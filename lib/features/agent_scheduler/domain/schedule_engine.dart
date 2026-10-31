@@ -212,6 +212,7 @@ String _dayTag(DateTime instant) {
 ) {
   final remainingToday = demand.remainingMinutesToday;
   if (demand.taskKind == ScheduleTaskKind.recurring && remainingToday != null) {
+    // = 0 是「当天已做完」，不是「没有时长依据」：不能落到第三级兜底。
     if (remainingToday <= 0) return (minutes: 0, fromTarget: true);
     return (minutes: remainingToday, fromTarget: true);
   }
@@ -307,11 +308,6 @@ String _clock(DateTime value) {
   return '$hour:$minute';
 }
 
-String _proposalId(ScheduleInput input, String prefix) {
-  final ids = input.demands.map((demand) => demand.taskId).toList()..sort();
-  return '$prefix-${input.baseVersion}-${ids.join('|')}';
-}
-
 /// 生成一版完整排程提案。
 ///
 /// 输出永远只是建议。即便输入里存在硬约束重叠，
@@ -330,6 +326,16 @@ ScheduleProposal generateSchedule(ScheduleInput input) {
     );
   }
 
+  // 固定课程/会议一律保留，从不为了让位而被移动——这条要能被机器读出来。
+  if (input.fixedBlocks.isNotEmpty) {
+    notes.add(
+      const ScheduleNote(
+        code: 'PRESERVED_FIXED_EVENTS',
+        message: '保留了固定课程和临时会议。',
+      ),
+    );
+  }
+
   final usable = _usableWindows(input);
   final ordered = _orderedDemands(input);
 
@@ -341,7 +347,7 @@ ScheduleProposal generateSchedule(ScheduleInput input) {
       ),
     );
     return ScheduleProposal(
-      proposalId: _proposalId(input, 'gen'),
+
       baseVersion: input.baseVersion,
       unplannedTasks: ordered
           .map(
@@ -366,7 +372,7 @@ ScheduleProposal generateSchedule(ScheduleInput input) {
       ),
     );
     return ScheduleProposal(
-      proposalId: _proposalId(input, 'gen'),
+
       baseVersion: input.baseVersion,
       unplannedTasks: ordered
           .map(
@@ -403,17 +409,9 @@ ScheduleProposal generateSchedule(ScheduleInput input) {
     }
 
     // 补上第三级兜底后，正常输入到不了这里（时长至少 30 分钟）。
-    // 保留作防御分支：若日后契约取消兜底、或上层显式给出非正值，仍不会静默丢弃。
-    if (duration.minutes <= 0) {
-      notes.add(
-        ScheduleNote(
-          code: 'NO_VALID_DURATION',
-          taskId: demand.taskId,
-          message: '${demand.title} 没有有效时长，已跳过。',
-        ),
-      );
-      continue;
-    }
+    // `NO_VALID_DURATION` 已被 M0 移出 v1 公共枚举，因此这里连内部码都不记，
+    // 直接跳过——不产生任何需要服务端再过滤一次的输出。
+    if (duration.minutes <= 0) continue;
 
     final deadline = demand.deadline;
     if (deadline != null && deadline.isPast(input.now)) {
@@ -451,6 +449,18 @@ ScheduleProposal generateSchedule(ScheduleInput input) {
             '${_clock(block.endAt)}。',
       ),
     );
+
+    // 估算必须被显式声明为估算：它不写回 Task，也不得被当成任务固有属性。
+    if (block.durationSource == 'scheduler_estimate') {
+      notes.add(
+        ScheduleNote(
+          code: 'ESTIMATED_DURATION',
+          taskId: demand.taskId,
+          message: '${demand.title} 的 ${duration.minutes} 分钟为调度估算；'
+              '只持久化计划开始时间。',
+        ),
+      );
+    }
   }
 
   changes.sort((a, b) {
@@ -459,7 +469,6 @@ ScheduleProposal generateSchedule(ScheduleInput input) {
   });
 
   return ScheduleProposal(
-    proposalId: _proposalId(input, 'gen'),
     baseVersion: input.baseVersion,
     blocks: changes,
     changes: _buildChanges(changes),
@@ -641,7 +650,7 @@ ScheduleProposal repairSchedule(
   );
 
   return ScheduleProposal(
-    proposalId: _proposalId(input, 'repair'),
+
     baseVersion: input.baseVersion,
     blocks: changes,
     changes: _buildChanges(changes),

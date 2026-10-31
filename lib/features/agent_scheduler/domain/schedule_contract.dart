@@ -248,6 +248,12 @@ class ScheduleTaskDemand {
 
   final String taskId;
   final String title;
+
+  /// 服务端**可信快照**给出的估算分钟数，是契约时长优先级的第二级。
+  ///
+  /// 这个值只能由服务端包装层从一致性快照折算后填入，**不接受 LLM 直接提供的
+  /// 伪可信估算**（M0 2026-10-31 决定）。它是进程内 DTO 字段，
+  /// **不是** `generate_schedule` 远程请求参数。
   final int requiredMinutes;
 
   /// 周期任务与单次事项分别建模，它决定区块最终能怎么持久化。
@@ -268,7 +274,12 @@ class ScheduleTaskDemand {
 
   /// 当天剩余待做量（分钟），对应契约 `remaining_minutes_today`。
   ///
+  /// **只属于服务端可信调度快照**，是进程内 DTO 字段，
+  /// **不得作为 `generate_schedule` 的 LLM 远程请求参数**（M0 2026-10-31 决定）。
+  ///
   /// 仅对周期任务有意义，且只能由服务端可信快照给出：
+  /// `= 0` 是特殊情况，**不走时长兜底**（兜底只补给"没有任何时长依据"的任务，
+  /// 而这里恰恰是"已经做完"）。
   /// - 非空且 > 0：本次就排这么多，优先于 [targetDurationSeconds]；
   /// - 等于 0：当天不再排程（已做完），不生成 block，
   ///   也不进入 `unplanned_tasks`——未安排不等于完成，这里恰恰是完成；
@@ -526,6 +537,27 @@ class UnplannedTask {
 /// 契约第 5.7 节：`explanations` 是**对象数组**，每项含机器可读 `code` 与
 /// 安全的 `message`，可选 `related_task_ids`。不再允许字符串与对象混用。
 /// [taskId] 非空时会被映射成单元素 `related_task_ids`。
+/// M0 2026-10-31 定下的 v1 **公共** `explanations[].code` 枚举（封闭）。
+///
+/// 只有落在这个集合里的码才允许出现在 v1 远程响应中。
+const Set<String> kPublicExplanationCodes = <String>{
+  'PRESERVED_FIXED_EVENTS',
+  'ESTIMATED_DURATION',
+  'FIXED_BLOCKS_OVERLAP',
+  'NO_AVAILABILITY_WINDOW',
+  'AVAILABILITY_SATURATED',
+  'ALREADY_DONE_TODAY',
+  'SCHEDULED',
+};
+
+/// 只允许出现在**进程内 repair 结果**里的码，未经批准不得进入 v1 远程响应。
+///
+/// 服务端序列化 Proposal 时（方案 A）必须先把这些码滤掉。
+const Set<String> kRepairOnlyExplanationCodes = <String>{
+  'DISPLACED_BY_FIXED',
+  'REPAIR_SUMMARY',
+};
+
 class ScheduleNote {
   const ScheduleNote({
     required this.code,
@@ -539,6 +571,9 @@ class ScheduleNote {
   /// 该解释关联的任务；为空表示这是全局说明，此时不输出 `related_task_ids`。
   final String? taskId;
 
+  /// 该码是否允许进入 v1 远程响应。
+  bool get isPublic => kPublicExplanationCodes.contains(code);
+
   Map<String, dynamic> toJson() => {
     'code': code,
     'message': message,
@@ -551,9 +586,13 @@ class ScheduleNote {
 /// 与契约第 5.7 节的对应关系：
 /// - [blocks] 是可展示但**不可直接持久化**的时间块；
 /// - [changes] 才是允许落库的白名单变更，只有两种形态。
+///
+/// **方案 A（M0 2026-10-31 决定）**：完整 Proposal 由服务端序列化。
+/// 因此这里**不含** `proposal_id` / `snapshot_ref` / `input_digest` /
+/// `generated_at` / `expires_at` —— 它们全由服务端生成，M2 不得自行构造；
+/// `base_version` 只是把服务端给进来的值原样带回，方便服务端对账。
 class ScheduleProposal {
   const ScheduleProposal({
-    required this.proposalId,
     required this.baseVersion,
     this.status = ScheduleProposalStatus.draft,
     this.snapshotRef,
@@ -564,10 +603,10 @@ class ScheduleProposal {
     this.notes = const [],
   });
 
-  final String proposalId;
-
   /// 生产环境下必须由可信服务产生并绑定 `snapshot_ref`，
   /// 进程内调用传入的值只用于测试。
+  ///
+  /// M2 **只原样带回**服务端随内部输入给定的值，不生成、不改写、不兜底造一个。
   final String baseVersion;
 
   /// 纯调度函数永远只产出 `draft`，由服务端决定是否推进到 `validated`。
@@ -591,8 +630,14 @@ class ScheduleProposal {
   int get totalPlannedMinutes =>
       blocks.fold(0, (total, block) => total + block.minutes);
 
+  /// 允许进入 v1 远程响应的解释：滤掉 repair 专用码与任何枚举外的码。
+  ///
+  /// 服务端序列化 Proposal（方案 A）时应以这个列表为准。
+  List<ScheduleNote> get publicExplanations =>
+      notes.where((note) => note.isPublic).toList();
+
   Map<String, dynamic> toJson() => {
-    'proposal_id': proposalId,
+    // 没有 `proposal_id`：方案 A 下它由 M0 服务端序列化时生成，M2 不得伪造。
     'base_version': baseVersion,
     'status': status.code,
     if (snapshotRef != null) 'snapshot_ref': snapshotRef,
