@@ -251,7 +251,7 @@ void main() {
         'task-report',
       ]);
       expect(
-        proposal.notes.map((note) => note.text).join(),
+        proposal.notes.map((note) => note.message).join(),
         contains('重叠'),
       );
       for (final block in proposal.blocks) {
@@ -458,7 +458,7 @@ void main() {
       expect(moved.minutes, 60);
       expect(_overlapsAny(moved, input.fixedBlocks), isFalse);
       expect(
-        repaired.notes.map((note) => note.text).join(),
+        repaired.notes.map((note) => note.message).join(),
         contains('共移动 1 处安排'),
       );
     });
@@ -715,6 +715,87 @@ void main() {
       );
     });
 
+    test('remaining_minutes_today 为 0 时不再排程，且不算未安排', () {
+      final input = ScheduleInput(
+        now: _at(0, 8),
+        horizonStart: _at(0, 8),
+        horizonEnd: _at(0, 22),
+        baseVersion: 'v1',
+        availability: [ScheduleWindow(startAt: _at(0, 9), endAt: _at(0, 12))],
+        demands: [
+          ScheduleTaskDemand(
+            taskId: 'done',
+            title: '背单词',
+            requiredMinutes: 60,
+            // 当天已经做完：不准再排，也不准报成排不下。
+            remainingMinutesToday: 0,
+            taskKind: ScheduleTaskKind.recurring,
+          ),
+        ],
+      );
+
+      final proposal = generateSchedule(input);
+
+      expect(proposal.blocks, isEmpty);
+      expect(proposal.unplannedTasks, isEmpty);
+      // 契约允许 track 它发生了什么：这里用一条 code 化的说明交代原因。
+      expect(
+        proposal.notes.map((note) => note.code),
+        contains('ALREADY_DONE_TODAY'),
+      );
+    });
+
+    test('remaining_minutes_today 非空时优先于完整目标', () {
+      final input = ScheduleInput(
+        now: _at(0, 8),
+        horizonStart: _at(0, 8),
+        horizonEnd: _at(0, 22),
+        baseVersion: 'v1',
+        availability: [ScheduleWindow(startAt: _at(0, 9), endAt: _at(0, 12))],
+        demands: [
+          ScheduleTaskDemand(
+            taskId: 'half-done',
+            title: '刷题',
+            requiredMinutes: 120,
+            targetDurationSeconds: 3600,
+            // 当天只剩 30 分钟：只排 30 分钟，且必须标 task_target。
+            remainingMinutesToday: 30,
+            taskKind: ScheduleTaskKind.recurring,
+          ),
+        ],
+      );
+
+      final proposal = generateSchedule(input);
+      final block = proposal.blocks.single;
+
+      expect(block.minutes, 30);
+      expect(block.durationSource, 'task_target');
+    });
+
+    test('未安排项带 reason_code、remaining_minutes 与 message', () {
+      final input = ScheduleInput(
+        now: _at(0, 8),
+        horizonStart: _at(0, 8),
+        horizonEnd: _at(0, 9),
+        baseVersion: 'v1',
+        availability: [ScheduleWindow(startAt: _at(0, 8), endAt: _at(0, 8, 20))],
+        demands: [
+          ScheduleTaskDemand(taskId: 'no-room', title: '长任务', requiredMinutes: 45),
+        ],
+      );
+
+      final proposal = generateSchedule(input);
+      final json = jsonDecode(jsonEncode(proposal.toJson())) as Map<String, dynamic>;
+      final items = json['unplanned_tasks'] as List<dynamic>;
+
+      expect(items, hasLength(1));
+      final item = items.first as Map<String, dynamic>;
+      expect(item['task_id'], 'no-room');
+      expect(item['reason_code'], 'WINDOW_INSUFFICIENT');
+      expect(item['remaining_minutes'], 45);
+      expect(item['message'], isA<String>());
+    });
+
     test('写入次数可推算：每 block 恰一条白名单变更，change_id 唯一，状态恒为 draft', () {
       final input = ScheduleInput(
         now: _at(0, 8),
@@ -867,9 +948,20 @@ void main() {
       expect(explanations, isNotEmpty);
       for (final item in explanations) {
         final map = item as Map<String, dynamic>;
-        // 结构冻结：每个元素只有 task_id 与 text 两个键，缺一不可。
-        expect(map.keys.toSet(), {'task_id', 'text'});
-        expect(map['text'], isA<String>());
+        // 契约第 5.7 节：对象数组，每项含 code 与 message，可选 related_task_ids，
+        // 不再允许字符串与对象混用。
+        expect(map.containsKey('code'), isTrue);
+        expect(map.containsKey('message'), isTrue);
+        final allowedExplanationKeys = {
+          'code',
+          'message',
+          'related_task_ids',
+        };
+        for (final key in map.keys) {
+          expect(allowedExplanationKeys, contains(key));
+        }
+        expect(map['code'], isA<String>());
+        expect(map['message'], isA<String>());
       }
     });
   });

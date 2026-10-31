@@ -184,12 +184,6 @@ DateTime _deadlineRank(ScheduleTaskDemand demand, ScheduleInput input) {
   return deadline.latestEndAt;
 }
 
-/// 一条需求本次要排多久。
-///
-/// 冻结目标「时长优先级」在本模块内的落地：
-/// 任务自带 [ScheduleTaskDemand.targetDurationSeconds] 优先于调用方给出的
-/// [ScheduleTaskDemand.requiredMinutes]。二者都没有时由入参兜底，
-/// 纯函数不会自己发明估算值。有目标就标 `task_target`，没有才标 `scheduler_estimate`。
 /// 本地日文本标签，用于生成可读且不重复的 changeId。
 String _dayTag(DateTime instant) {
   final day = scheduleDayOnly(instant);
@@ -198,10 +192,37 @@ String _dayTag(DateTime instant) {
   return '${day.year}-$month-$date';
 }
 
-int _demandMinutes(ScheduleTaskDemand demand) {
+/// 本次排程要用的时长。
+///
+/// 契约第 5.6 节的优先级：**任务目标 > 服务端快照估算 > 兜底**。
+/// 周期任务的目标由 `remaining_minutes_today` 折算：
+/// - 非空：当日剩余就是本次要排的量（已扣掉当天做完的部分）；
+/// - 为 0：当天不再排程（任务已完成），返回 `minutes = 0`，
+///   调用方据此既不生成 block、也不计入 `unplanned_tasks`
+///   ——「未安排不等于完成」，而这里恰恰是完成；
+/// - 为空：按完整 `duration_target_seconds` 排。
+///
+/// `fromTarget` 决定 `duration_source` 是 `task_target` 还是 `scheduler_estimate`；
+/// 调用方直接给出的时长一律算估算，不得伪装成任务固有属性。
+({int minutes, bool fromTarget}) _durationOf(ScheduleTaskDemand demand) {
+  final remainingToday = demand.remainingMinutesToday;
+  if (demand.taskKind == ScheduleTaskKind.recurring && remainingToday != null) {
+    if (remainingToday <= 0) return (minutes: 0, fromTarget: true);
+    return (minutes: remainingToday, fromTarget: true);
+  }
+
   final target = demand.targetDurationSeconds;
-  if (target == null || target <= 0) return demand.requiredMinutes;
-  return (target / Duration.secondsPerMinute).ceil();
+  if (target != null && target > 0) {
+    return (
+      minutes: (target / Duration.secondsPerMinute).ceil(),
+      fromTarget: true,
+    );
+  }
+
+  if (demand.requiredMinutes > 0) {
+    return (minutes: demand.requiredMinutes, fromTarget: false);
+  }
+  return (minutes: 0, fromTarget: false);
 }
 
 /// 在空闲片段中为一条需求找位置：最早可行优先，不拆分。
@@ -210,7 +231,9 @@ ProposedBlock? _placeDemand(
   ScheduleTaskDemand demand,
   ScheduleInput input,
 ) {
-  final need = Duration(minutes: _demandMinutes(demand));
+  final duration = _durationOf(demand);
+  if (duration.minutes <= 0) return null;
+  final need = Duration(minutes: duration.minutes);
   for (final window in free) {
     var start = _later(window.startAt, input.now);
     final earliest = demand.earliestStartAt;
@@ -229,7 +252,7 @@ ProposedBlock? _placeDemand(
       startAt: start,
       endAt: start.add(need),
       taskKind: demand.taskKind,
-      hasDurationTarget: demand.targetDurationSeconds != null,
+      hasDurationTarget: duration.fromTarget,
     );
   }
   return null;
@@ -257,13 +280,14 @@ List<ScheduleWindow> _subtract(List<ScheduleWindow> free, ScheduleWindow taken) 
 
 UnplannedTask _unplanned(
   ScheduleTaskDemand demand,
+  int remainingMinutes,
   UnplannedReason reason,
   String reasonText,
 ) {
   return UnplannedTask(
     taskId: demand.taskId,
     title: demand.title,
-    remainingMinutes: demand.requiredMinutes,
+    remainingMinutes: remainingMinutes,
     reason: reason,
     reasonText: reasonText,
   );
@@ -290,8 +314,9 @@ ScheduleProposal generateSchedule(ScheduleInput input) {
   for (final block in overlapping) {
     notes.add(
       ScheduleNote(
+        code: 'FIXED_BLOCKS_OVERLAP',
         taskId: block.ownerId,
-        text: '${block.title ?? '日程'} 与其它课程/会议时间重叠。'
+        message: '${block.title ?? '日程'} 与其它课程/会议时间重叠。'
             '排程不会移动它们，请到日历确认是否录入有误。',
       ),
     );
@@ -302,7 +327,10 @@ ScheduleProposal generateSchedule(ScheduleInput input) {
 
   if (usable.isEmpty) {
     notes.add(
-      const ScheduleNote(text: '当前没有可用的时间窗口，无法生成排程建议。'),
+      const ScheduleNote(
+        code: 'NO_AVAILABILITY_WINDOW',
+        message: '当前没有可用的时间窗口，无法生成排程建议。',
+      ),
     );
     return ScheduleProposal(
       proposalId: _proposalId(input, 'gen'),
@@ -311,6 +339,7 @@ ScheduleProposal generateSchedule(ScheduleInput input) {
           .map(
             (demand) => _unplanned(
               demand,
+              _durationOf(demand).minutes,
               UnplannedReason.noAvailability,
               '没有开放任何时间窗口，请先设置可用时段。',
             ),
@@ -323,7 +352,10 @@ ScheduleProposal generateSchedule(ScheduleInput input) {
   var free = _freeWindows(usable, input);
   if (free.isEmpty) {
     notes.add(
-      const ScheduleNote(text: '可用时间已被课程或会议占满，无法插入新的安排。'),
+      const ScheduleNote(
+        code: 'AVAILABILITY_SATURATED',
+        message: '可用时间已被课程或会议占满，无法插入新的安排。',
+      ),
     );
     return ScheduleProposal(
       proposalId: _proposalId(input, 'gen'),
@@ -332,6 +364,7 @@ ScheduleProposal generateSchedule(ScheduleInput input) {
           .map(
             (demand) => _unplanned(
               demand,
+              _durationOf(demand).minutes,
               UnplannedReason.overlapsFixed,
               '开放时段已被课程或会议占满。',
             ),
@@ -345,9 +378,29 @@ ScheduleProposal generateSchedule(ScheduleInput input) {
   final unplanned = <UnplannedTask>[];
 
   for (final demand in ordered) {
-    if (demand.requiredMinutes <= 0) {
+    final duration = _durationOf(demand);
+
+    // remaining_minutes_today == 0 表示当天已经做完：既不排，也不记为未安排。
+    if (duration.minutes == 0 &&
+        demand.taskKind == ScheduleTaskKind.recurring &&
+        demand.remainingMinutesToday != null) {
       notes.add(
-        ScheduleNote(taskId: demand.taskId, text: '${demand.title} 没有有效时长，已跳过。'),
+        ScheduleNote(
+          code: 'ALREADY_DONE_TODAY',
+          taskId: demand.taskId,
+          message: '${demand.title} 当天目标已完成，不再重复排程。',
+        ),
+      );
+      continue;
+    }
+
+    if (duration.minutes <= 0) {
+      notes.add(
+        ScheduleNote(
+          code: 'NO_VALID_DURATION',
+          taskId: demand.taskId,
+          message: '${demand.title} 没有有效时长，已跳过。',
+        ),
       );
       continue;
     }
@@ -357,6 +410,7 @@ ScheduleProposal generateSchedule(ScheduleInput input) {
       unplanned.add(
         _unplanned(
           demand,
+          duration.minutes,
           UnplannedReason.pastDeadline,
           '截止时间已过，需要先调整时间再排。',
         ),
@@ -369,8 +423,9 @@ ScheduleProposal generateSchedule(ScheduleInput input) {
       unplanned.add(
         _unplanned(
           demand,
+          duration.minutes,
           UnplannedReason.windowInsufficient,
-          '剩余可用时间不足 ${demand.requiredMinutes} 分钟。',
+          '剩余可用时间不足 ${duration.minutes} 分钟。',
         ),
       );
       continue;
@@ -380,8 +435,9 @@ ScheduleProposal generateSchedule(ScheduleInput input) {
     free = _subtract(free, block.window);
     notes.add(
       ScheduleNote(
+        code: 'SCHEDULED',
         taskId: demand.taskId,
-        text: '${demand.title} 安排在 ${_clock(block.startAt)}–'
+        message: '${demand.title} 安排在 ${_clock(block.startAt)}–'
             '${_clock(block.endAt)}。',
       ),
     );
@@ -424,8 +480,9 @@ ScheduleProposal repairSchedule(
   for (final block in _overlappingFixedBlocks(input)) {
     notes.add(
       ScheduleNote(
+        code: 'FIXED_BLOCKS_OVERLAP',
         taskId: block.ownerId,
-        text: '${block.title ?? '日程'} 与其它课程/会议时间重叠。'
+        message: '${block.title ?? '日程'} 与其它课程/会议时间重叠。'
             '重排不会移动它们，请到日历确认是否录入有误。',
       ),
     );
@@ -507,12 +564,14 @@ ScheduleProposal repairSchedule(
   });
 
   for (final demand in ordered) {
-    if (demand.requiredMinutes <= 0) continue;
+    final durationMinutes = _durationOf(demand).minutes;
+    if (durationMinutes <= 0) continue;
     final deadline = demand.deadline;
     if (deadline != null && deadline.isPast(input.now)) {
       unplanned.add(
         _unplanned(
           demand,
+          durationMinutes,
           UnplannedReason.pastDeadline,
           '截止时间已过，需要先调整时间再排。',
         ),
@@ -525,8 +584,9 @@ ScheduleProposal repairSchedule(
       unplanned.add(
         _unplanned(
           demand,
+          durationMinutes,
           UnplannedReason.windowInsufficient,
-          '剩余可用时间不足 ${demand.requiredMinutes} 分钟。',
+          '剩余可用时间不足 $durationMinutes 分钟。',
         ),
       );
       continue;
@@ -545,8 +605,9 @@ ScheduleProposal repairSchedule(
     );
     notes.add(
       ScheduleNote(
+        code: 'DISPLACED_BY_FIXED',
         taskId: demand.taskId,
-        text: '${demand.title} 与新增日程冲突，'
+        message: '${demand.title} 与新增日程冲突，'
             '移到 ${_clock(block.startAt)}–${_clock(block.endAt)}。',
       ),
     );
@@ -562,7 +623,8 @@ ScheduleProposal repairSchedule(
   final movedCount = moved.length;
   notes.add(
     ScheduleNote(
-      text: movedCount == 0
+      code: 'REPAIR_SUMMARY',
+      message: movedCount == 0
           ? '新增日程与现有安排无冲突，计划保持原样。'
           : '共移动 $movedCount 处安排，其余保持不变。',
     ),

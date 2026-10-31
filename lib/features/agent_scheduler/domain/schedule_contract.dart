@@ -54,8 +54,9 @@ extension ScheduleTaskKindCode on ScheduleTaskKind {
 /// 由服务端 `validate_schedule` 决定是否推进，这里绝不冒充 `validated`。
 enum ScheduleProposalStatus {
   draft,
-  validated,
   pendingApproval,
+  applying,
+  readbackPending,
   applied,
   rejected,
   expired,
@@ -65,8 +66,9 @@ enum ScheduleProposalStatus {
 extension ScheduleProposalStatusCode on ScheduleProposalStatus {
   String get code => switch (this) {
     ScheduleProposalStatus.draft => 'draft',
-    ScheduleProposalStatus.validated => 'validated',
     ScheduleProposalStatus.pendingApproval => 'pending_approval',
+    ScheduleProposalStatus.applying => 'applying',
+    ScheduleProposalStatus.readbackPending => 'readback_pending',
     ScheduleProposalStatus.applied => 'applied',
     ScheduleProposalStatus.rejected => 'rejected',
     ScheduleProposalStatus.expired => 'expired',
@@ -241,6 +243,7 @@ class ScheduleTaskDemand {
     this.earliestStartAt,
     this.priority = 0,
     this.targetDurationSeconds,
+    this.remainingMinutesToday,
   });
 
   final String taskId;
@@ -262,6 +265,15 @@ class ScheduleTaskDemand {
   /// 任务自带时长目标。只有传入它，`duration_source` 才是 `task_target`；
   /// 否则调度器给出的是估算，不得被描述成任务固有属性。
   final int? targetDurationSeconds;
+
+  /// 当天剩余待做量（分钟），对应契约 `remaining_minutes_today`。
+  ///
+  /// 仅对周期任务有意义，且只能由服务端可信快照给出：
+  /// - 非空且 > 0：本次就排这么多，优先于 [targetDurationSeconds]；
+  /// - 等于 0：当天不再排程（已做完），不生成 block，
+  ///   也不进入 `unplanned_tasks`——未安排不等于完成，这里恰恰是完成；
+  /// - 为空：按完整的 [targetDurationSeconds] 排。
+  final int? remainingMinutesToday;
 }
 
 /// 上一版提案中已存在的柔性安排。
@@ -389,8 +401,6 @@ class ProposedBlock {
     'persistable_as': persistableAs,
     'duration_source': durationSource,
     'duration_seconds': durationSeconds,
-    'minutes': minutes,
-    'moved_from_previous_plan': movedFromPreviousPlan,
   };
 }
 
@@ -504,18 +514,33 @@ class UnplannedTask {
     'title': title,
     'remaining_minutes': remainingMinutes,
     'reason_code': reason.code,
-    'reason': reasonText,
+    'message': reasonText,
   };
 }
 
-/// 一条解释。[taskId] 为空表示这是全局说明。
+/// 一条解释。
+///
+/// 契约第 5.7 节：`explanations` 是**对象数组**，每项含机器可读 `code` 与
+/// 安全的 `message`，可选 `related_task_ids`。不再允许字符串与对象混用。
+/// [taskId] 非空时会被映射成单元素 `related_task_ids`。
 class ScheduleNote {
-  const ScheduleNote({this.taskId, required this.text});
+  const ScheduleNote({
+    required this.code,
+    required this.message,
+    this.taskId,
+  });
 
+  final String code;
+  final String message;
+
+  /// 该解释关联的任务；为空表示这是全局说明，此时不输出 `related_task_ids`。
   final String? taskId;
-  final String text;
 
-  Map<String, dynamic> toJson() => {'task_id': taskId, 'text': text};
+  Map<String, dynamic> toJson() => {
+    'code': code,
+    'message': message,
+    if (taskId != null) 'related_task_ids': <String>[taskId!],
+  };
 }
 
 /// 提案。它永远不会直接改写任何任务、日历、计时或完成记录。
