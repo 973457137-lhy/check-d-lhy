@@ -715,6 +715,57 @@ void main() {
       );
     });
 
+    test('写入次数可推算：每 block 恰一条白名单变更，change_id 唯一，状态恒为 draft', () {
+      final input = ScheduleInput(
+        now: _at(0, 8),
+        horizonStart: _at(0, 8),
+        horizonEnd: _at(2, 22),
+        baseVersion: 'v1',
+        availability: [
+          ScheduleWindow(startAt: _at(0, 9), endAt: _at(0, 12)),
+          ScheduleWindow(startAt: _at(1, 9), endAt: _at(1, 12)),
+        ],
+        demands: [
+          ScheduleTaskDemand(
+            taskId: 'recurring-write',
+            title: '周期：每日练琴',
+            requiredMinutes: 60,
+            taskKind: ScheduleTaskKind.recurring,
+          ),
+          ScheduleTaskDemand(
+            taskId: 'onetime-write',
+            title: '单次：交报告',
+            requiredMinutes: 45,
+            taskKind: ScheduleTaskKind.oneTime,
+          ),
+        ],
+      );
+
+      final proposal = generateSchedule(input);
+
+      // C 的判定项之一：期望写入次数可直接由提案推算，不必先执行。
+      expect(proposal.changes, hasLength(proposal.blocks.length));
+
+      final ids = proposal.changes.map((change) => change.toJson()['change_id']);
+      expect(ids.toSet(), hasLength(ids.length));
+
+      // 契约第 5.7 节白名单只有两种 change type。
+      final allowedTypes = {'schedule_one_time', 'upsert_daily_override'};
+      for (final change in proposal.changes) {
+        final json = change.toJson();
+        expect(allowedTypes, contains(json['type']), reason: json.toString());
+        // Open Question 5 未定之前，最小权限只输出 reschedule。
+        final action = json['action'];
+        if (action != null) expect(action, 'reschedule');
+      }
+
+      // 「状态」判定项：纯函数不得产生终态，也不得自己构造服务端字段。
+      expect(proposal.status, ScheduleProposalStatus.draft);
+      expect(proposal.toJson()['status'], 'draft');
+      expect(proposal.snapshotRef, isNull);
+      expect(proposal.inputDigest, isNull);
+    });
+
     test('周期任务同一本地日最多一个 block，且同一 (任务, 日期) 只产出一条变更', () {
       final input = ScheduleInput(
         now: _at(0, 8),
