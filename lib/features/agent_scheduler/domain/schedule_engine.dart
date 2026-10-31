@@ -184,13 +184,33 @@ DateTime _deadlineRank(ScheduleTaskDemand demand, ScheduleInput input) {
   return deadline.latestEndAt;
 }
 
+/// 一条需求本次要排多久。
+///
+/// 冻结目标「时长优先级」在本模块内的落地：
+/// 任务自带 [ScheduleTaskDemand.targetDurationSeconds] 优先于调用方给出的
+/// [ScheduleTaskDemand.requiredMinutes]。二者都没有时由入参兜底，
+/// 纯函数不会自己发明估算值。有目标就标 `task_target`，没有才标 `scheduler_estimate`。
+/// 本地日文本标签，用于生成可读且不重复的 changeId。
+String _dayTag(DateTime instant) {
+  final day = scheduleDayOnly(instant);
+  final month = day.month.toString().padLeft(2, '0');
+  final date = day.day.toString().padLeft(2, '0');
+  return '${day.year}-$month-$date';
+}
+
+int _demandMinutes(ScheduleTaskDemand demand) {
+  final target = demand.targetDurationSeconds;
+  if (target == null || target <= 0) return demand.requiredMinutes;
+  return (target / Duration.secondsPerMinute).ceil();
+}
+
 /// 在空闲片段中为一条需求找位置：最早可行优先，不拆分。
 ProposedBlock? _placeDemand(
   List<ScheduleWindow> free,
   ScheduleTaskDemand demand,
   ScheduleInput input,
 ) {
-  final need = Duration(minutes: demand.requiredMinutes);
+  final need = Duration(minutes: _demandMinutes(demand));
   for (final window in free) {
     var start = _later(window.startAt, input.now);
     final earliest = demand.earliestStartAt;
@@ -592,10 +612,13 @@ List<ScheduleWindow> _subtractAll(
 List<ProposedScheduleChange> _buildChanges(List<ProposedBlock> blocks) {
   final changes = <ProposedScheduleChange>[];
   for (final block in blocks) {
+    // 同一任务在不同日期各有一条变更时，changeId 必须区分，
+    // 否则服务端无法定位被拒的那一条。
+    final changeId = 'chg-${block.taskId}-${_dayTag(block.startAt)}';
     if (block.taskKind == ScheduleTaskKind.oneTime) {
       changes.add(
         ScheduleOneTimeChange(
-          changeId: 'chg-${block.taskId}',
+          changeId: changeId,
           taskId: block.taskId,
           plannedDate: scheduleDayOnly(block.startAt),
           scheduledAt: block.startAt,
@@ -608,7 +631,7 @@ List<ProposedScheduleChange> _buildChanges(List<ProposedBlock> blocks) {
     if (endMinute <= startMinute) endMinute = 1440;
     changes.add(
       UpsertDailyOverrideChange(
-        changeId: 'chg-${block.taskId}',
+        changeId: changeId,
         itemKind: block.taskKind,
         itemId: block.taskId,
         localDate: scheduleDayOnly(block.startAt),

@@ -126,7 +126,21 @@ Horolog 的取舍记录见上文第 1 节；截至本文档日期，未引入、
 **开发人员模式**（symlink 支持）才能组装插件 registrant，该开关未在本机开启。
 两个源文件内容与主仓完全一致，仅 import 前缀不同。
 
+### 2026-10-31 第二轮：22/22 通过（补齐冻结目标守卫）
+
+同一环境。在上一轮基础上新增 4 个「冻结目标守卫」用例，全部通过：
+
+1. 时长优先级：`targetDurationSeconds` 生效时长，`duration_source` 标 `task_target`。
+   （此前该字段只影响标签、不参与排时长，属于已修的实现缺口。）
+2. 周期任务同一 `(item_id, local_date)` 至多一条 `upsert_daily_override`，
+   且 `change_id` 带日期后缀以区分不同天的同一任务。
+3. `reason_code` 输出值封闭在 `UnplannedReason` 四个取值内。
+4. `explanations` 每个元素恒为 `{task_id, text}` 两个键。
+
+冻结目标清单见 `docs/scheduler/freeze-targets-m2.md`。
+
 结果：**18 个用例全部通过**（含 5 组硬约束、3 组最小扰动重排、4 组契约对齐、1 组模块边界）。
+**后续 22/22 详见第 8 节末尾。**
 
 **本次实跑发现并修复的两个真实缺陷：**
 

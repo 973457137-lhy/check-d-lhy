@@ -682,6 +682,147 @@ void main() {
     });
   });
 
+  group('冻结目标守卫', () {
+    test('时长优先级：任务自带目标优先于调用方给出的时长', () {
+      final input = ScheduleInput(
+        now: _at(0, 8),
+        horizonStart: _at(0, 8),
+        horizonEnd: _at(0, 22),
+        baseVersion: 'v1',
+        availability: [
+          ScheduleWindow(startAt: _at(0, 9), endAt: _at(0, 12)),
+        ],
+        demands: [
+          ScheduleTaskDemand(
+            taskId: 'task-target',
+            title: '练琴',
+            // 调用方说 60 分钟，但任务自带目标是 30 分钟。
+            requiredMinutes: 60,
+            targetDurationSeconds: 1800,
+            taskKind: ScheduleTaskKind.recurring,
+          ),
+        ],
+      );
+
+      final proposal = generateSchedule(input);
+      final block = proposal.blocks.single;
+
+      expect(block.minutes, 30);
+      expect(block.durationSource, 'task_target');
+      expect(
+        jsonDecode(jsonEncode(proposal.toJson()))['blocks'].first['duration_seconds'],
+        1800,
+      );
+    });
+
+    test('周期任务同一本地日最多一个 block，且同一 (任务, 日期) 只产出一条变更', () {
+      final input = ScheduleInput(
+        now: _at(0, 8),
+        horizonStart: _at(0, 8),
+        horizonEnd: _at(2, 22),
+        baseVersion: 'v1',
+        availability: [
+          ScheduleWindow(startAt: _at(0, 9), endAt: _at(0, 12)),
+          ScheduleWindow(startAt: _at(1, 9), endAt: _at(1, 12)),
+        ],
+        demands: [
+          ScheduleTaskDemand(
+            taskId: 'recurring-one',
+            title: '每日复现练琴',
+            requiredMinutes: 60,
+            taskKind: ScheduleTaskKind.recurring,
+          ),
+        ],
+      );
+
+      final proposal = generateSchedule(input);
+
+      final keyed = <String>{};
+      for (final change in proposal.changes) {
+        final json = change.toJson();
+        final key = '${json['item_id'] ?? json['task_id']}@'
+            '${json['local_date'] ?? json['planned_date']}';
+        expect(keyed.add(key), isTrue, reason: '同一任务同一日期重复： $key');
+      }
+      // 本次只排首日：同一 proposal 内不会自动把同一周期任务铺开到多天。
+      expect(keyed, hasLength(1));
+      expect(proposal.changes.single.toJson()['change_id'], isNotNull);
+    });
+
+    test('reason_code 取值必须落在封闭枚举内', () {
+      final input = ScheduleInput(
+        now: _at(0, 8),
+        horizonStart: _at(0, 8),
+        horizonEnd: _at(0, 9),
+        baseVersion: 'v1',
+        availability: [
+          ScheduleWindow(startAt: _at(0, 8), endAt: _at(0, 8, 10)),
+        ],
+        demands: [
+          ScheduleTaskDemand(
+            taskId: 'too-long',
+            title: '放不下的任务',
+            requiredMinutes: 120,
+          ),
+        ],
+      );
+
+      final proposal = generateSchedule(input);
+      final allowed = UnplannedReason.values.map((reason) => reason.code).toSet();
+
+      for (final task in proposal.unplannedTasks) {
+        expect(allowed, contains(task.reason.code), reason: task.taskId);
+      }
+      expect(proposal.unplannedTasks, isNotEmpty);
+    });
+
+    test('explanations 元素结构统一，且不带额外字段', () {
+      final input = ScheduleInput(
+        now: _at(0, 8),
+        horizonStart: _at(0, 8),
+        horizonEnd: _at(0, 22),
+        baseVersion: 'v1',
+        // 两条硬约束互相重叠，用于产生一条解释。
+        fixedBlocks: [
+          ScheduleFixedBlock(
+            ownerId: 'course-a',
+            ownerType: ScheduleOwnerType.course,
+            startAt: _at(0, 9),
+            endAt: _at(0, 10),
+          ),
+          ScheduleFixedBlock(
+            ownerId: 'course-b',
+            ownerType: ScheduleOwnerType.course,
+            startAt: _at(0, 9, 30),
+            endAt: _at(0, 10, 30),
+          ),
+        ],
+        availability: [
+          ScheduleWindow(startAt: _at(0, 8), endAt: _at(0, 22)),
+        ],
+        demands: [
+          ScheduleTaskDemand(
+            taskId: 'task-note',
+            title: '复习',
+            requiredMinutes: 30,
+          ),
+        ],
+      );
+
+      final proposal = generateSchedule(input);
+      final json = jsonDecode(jsonEncode(proposal.toJson())) as Map<String, dynamic>;
+      final explanations = json['explanations'] as List<dynamic>;
+
+      expect(explanations, isNotEmpty);
+      for (final item in explanations) {
+        final map = item as Map<String, dynamic>;
+        // 结构冻结：每个元素只有 task_id 与 text 两个键，缺一不可。
+        expect(map.keys.toSet(), {'task_id', 'text'});
+        expect(map['text'], isA<String>());
+      }
+    });
+  });
+
   group('模块边界', () {
     test('调度模块不得访问数据库或任何应用层代码', () {
       for (final path in [
