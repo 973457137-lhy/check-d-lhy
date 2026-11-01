@@ -94,6 +94,12 @@ bash docs/scheduler/tools/contract-diff-check.sh <新的固定SHA>
 
 这三件不答，四判定项里「错误码」和「写入次数」两栏就还有开不了口的格子。
 
+> **闭环状态（2026-11-01 M0 邮件确认）**：
+> - 第 1 项 `explanations[].code`：已于 c53b1a9 轮写死七值闭集（见第五节），不再欠。
+> - 第 2 项 R1 死锁：M0 确认已写入 §6.5「未终结审批」集合，不再列为待确认项。
+> - 第 3 项 X1 二次写入：M0 确认已写入 §6.7「换幂等键零写入」，不再列为待确认项。
+> 三件事全部闭环，本节不再有开口格子。
+
 ## 五、c53b1a9 轮结论（2026-10-31 已跑）
 
 新固定 SHA `c53b1a91c17cd9acdee6d3937c093fcf97515ba0` 到手后按本清单跑了 diff + 8 项：
@@ -120,4 +126,20 @@ bash docs/scheduler/tools/contract-diff-check.sh <新的固定SHA>
 - **结论：零代码改动、零测试。** 仅切换契约基准为 c9dda831（`contract-diff-check.sh` BASE_SHA 更新），PR #2 继续保留未合并。
 
 本轮无测试运行（M0 明确本轮不需为这处纯文档变更重跑 38/38）。
+
+## 七、§6.5/§6.7 确认闭环（2026-11-01 M0 邮件答复）
+
+M0（daixinxin_1）回信确认：此前报告里标为「待 M0 确认」的两处契约位置均已写入正文，
+以 c9dda831 为当前唯一基准，无需再等 M0 补条款。我按 c9dda831 正文逐条核对属实：
+
+- **§6.5「未终结审批」集合（line 539–570）**：有效状态 `pending`、`approved`、`token_issued`；
+  终结状态 `consumed`、`rejected`、`expired`；同一用户同一 Proposal 已有未终结 Approval 时
+  重复请求必须返回同一个 `approval_id`；一个 Proposal 同时最多一个有效 Approval。→ R1 死锁已解。
+- **§6.7「换幂等键零写入」（line 630–724）**：`applying`/`readback_pending` 遇新幂等键返回
+  `READBACK_PENDING` 并反映真实 `proposal_status`；两路径均不得启动第二次 apply；
+  `readback_pending` 三条恢复路径只能权威回读与状态收敛，业务写入增量均为 0；同键重试只能重新回读，
+  不得再次写入。→ X1 二次写入通道已封。
+
+**结论：零代码改动、零测试。** 契约基准仍为 c9dda831 不变（本轮无新 SHA）。仅把第四节
+「欠 M0 三件事」中 R1/X1 两项标记为已闭环，并同步第一节第 3、5 项判据已满足。PR #2 保持未合并。
 
