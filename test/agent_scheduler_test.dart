@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:check_d/features/agent_scheduler/domain/schedule_contract.dart';
 import 'package:check_d/features/agent_scheduler/domain/schedule_engine.dart';
@@ -358,6 +359,119 @@ void main() {
       final second = generateSchedule(input);
 
       expect(jsonEncode(first.toJson()), jsonEncode(second.toJson()));
+    });
+
+    // 上面那条只证明「同一个对象跑两次结果一样」。真正的确定性要求更强：
+    // 服务端拼装 input 时，availability / fixedBlocks / demands 的列表顺序不保证稳定
+    // （数据库返回顺序、并发组装都可能变），输出必须逐字节不变。
+    // 契约 §5.2 的 scheduling_weight 是「同等硬约束下稳定排序」的服务端手段，算法仍 BLOCKED；
+    // 在它落地之前，M2 的确定性完全由下面这两条兜底排序键承担。
+    test('确定性排序：打乱输入列表顺序不改变任何输出字节', () {
+      final availability = [
+        _window(0, 8, 12),
+        _window(0, 14, 22),
+        _window(1, 8, 20),
+      ];
+      final fixedBlocks = [
+        ScheduleFixedBlock(
+          ownerId: 'course-1',
+          ownerType: ScheduleOwnerType.course,
+          startAt: _at(0, 10),
+          endAt: _at(0, 11),
+          title: '高等数学',
+        ),
+        ScheduleFixedBlock(
+          ownerId: 'event-1',
+          ownerType: ScheduleOwnerType.event,
+          startAt: _at(1, 9),
+          endAt: _at(1, 10),
+          title: '社团活动',
+        ),
+      ];
+      final demands = [
+        ScheduleTaskDemand(
+          taskId: 'a-report',
+          title: '拆报告框架',
+          requiredMinutes: 60,
+          priority: 1,
+        ),
+        ScheduleTaskDemand(taskId: 'b-review', title: '复习', requiredMinutes: 90),
+        ScheduleTaskDemand(
+          taskId: 'c-run',
+          title: '跑步',
+          requiredMinutes: 45,
+          deadline: ScheduleDeadline.dateOnly(_at(0, 0)),
+        ),
+      ];
+
+      ScheduleInput buildInput({
+        required List<ScheduleWindow> availability,
+        required List<ScheduleFixedBlock> fixedBlocks,
+        required List<ScheduleTaskDemand> demands,
+      }) =>
+          ScheduleInput(
+            now: _at(0, 7),
+            horizonStart: _at(0, 7),
+            horizonEnd: _at(1, 20),
+            baseVersion: 'v1',
+            availability: availability,
+            fixedBlocks: fixedBlocks,
+            demands: demands,
+          );
+
+      final baselineProposal = generateSchedule(
+        buildInput(
+          availability: availability,
+          fixedBlocks: fixedBlocks,
+          demands: demands,
+        ),
+      );
+      // 防空跑：没有块的话「顺序无关」毫无意义。
+      expect(baselineProposal.blocks, isNotEmpty);
+      expect(baselineProposal.blocks.length, 3);
+      final baseline = jsonEncode(baselineProposal.toJson());
+
+      for (final seed in [1, 7, 42, 20261102]) {
+        final shuffled = generateSchedule(
+          buildInput(
+            availability: List.of(availability)..shuffle(Random(seed)),
+            fixedBlocks: List.of(fixedBlocks)..shuffle(Random(seed + 1)),
+            demands: List.of(demands)..shuffle(Random(seed + 2)),
+          ),
+        );
+        expect(
+          jsonEncode(shuffled.toJson()),
+          baseline,
+          reason: '输入列表顺序打乱后输出发生变化，seed=$seed',
+        );
+      }
+    });
+
+    test('同等约束下的兜底排序键是 taskId 字典序（scheduling_weight 尚不参与）', () {
+      ScheduleInput inputWith(List<ScheduleTaskDemand> demands) => ScheduleInput(
+            now: _at(0, 7),
+            horizonStart: _at(0, 8),
+            horizonEnd: _at(0, 12),
+            baseVersion: 'v1',
+            availability: [_window(0, 8, 12)],
+            demands: demands,
+          );
+
+      final alpha =
+          ScheduleTaskDemand(taskId: 'a-task', title: '甲', requiredMinutes: 60);
+      final beta =
+          ScheduleTaskDemand(taskId: 'b-task', title: '乙', requiredMinutes: 60);
+
+      // 无截止、同优先级的两个任务，谁先排只能由稳定键决定。
+      for (final demands in [
+        [alpha, beta],
+        [beta, alpha],
+      ]) {
+        final proposal = generateSchedule(inputWith(demands));
+        expect(proposal.blocks.length, 2);
+        expect(proposal.blocks[0].taskId, 'a-task');
+        expect(proposal.blocks[1].taskId, 'b-task');
+      }
     });
 
     test('排出来的块不跨自然日', () {
