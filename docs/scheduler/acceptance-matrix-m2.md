@@ -18,6 +18,21 @@
 > M0 发布新契约 commit 后，**只做一次增量复审**：确认下表的每一行都「可测试」，
 > 不重新通读全部文档。
 
+## 零、测试通道状态（2026-11-02 更新）
+
+| 通道 | 命令 | 结果 | 备注 |
+|---|---|---|---|
+| 隔离 Dart（`/e/m2-verify`） | `dart test` | **38/38 通过**（退出码 0） | 纯 Dart VM，不依赖 flutter_tester |
+| 宿主 Flutter（本仓库） | `env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy flutter test test/agent_scheduler_test.dart` | **38/38 通过**（退出码 0） | 2026-11-02 首次稳定复现通过 |
+
+宿主通道此前的 `Invalid WebSocket upgrade request` **不是**开发人员模式、也不是 sqlite3 502，
+而是本机 `http_proxy` 劫持了 `flutter` 与 `flutter_tester` 之间的 localhost WebSocket 握手。
+根因、复现命令、给 C 的 E0→E1 升格材料见
+`docs/scheduler/reports/verification-2026-11-02-host-channel.md`。
+
+**边界不变**：宿主通道通过 ≠ 生产环境通过。生产原子写入、可信快照、`base_version`
+事务内核验、时区解析四项仍为 BLOCKED，一条都没被这 38 条覆盖。
+
 ## 一、四项判定口径
 
 C 的判定口径是「**响应码 + 状态 + 数据 + 实际写入次数**」四项。
