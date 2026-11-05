@@ -1,0 +1,63 @@
+# M2 引擎容器化片段（给 M1 的 tool_server 同容器部署用）
+
+> 目的：让 M1 的 `tool_server` 用 `http://127.0.0.1:8787` 调 M2 引擎，**不需要把引擎暴露公网**。
+> 前提：容器里能跑第二个进程（同镜像、同 localhost）。
+> 本文件是**片段**，不是可直接构建的完整 Dockerfile —— 需要 M1 的 base image 才能定稿。
+
+## 方案 A（推荐）：多阶段构建，把引擎塞进同一个镜像
+
+```dockerfile
+# ---- stage 1: 取 Dart SDK 并编译引擎为 AOT 可执行文件 ----
+FROM dart:stable AS engine-build
+WORKDIR /build
+# 只拷引擎与它依赖的两个域文件；这两个文件在构建期从主仓复制，
+# 不是手工维护的第二份源码（源码仍以 M2 分支为准）。
+COPY tools/m2-engine /build/tools/m2-engine
+COPY lib/features/agent_scheduler/domain /build/lib/features/agent_scheduler/domain
+# 引擎用 package:check_d/... 导入, 故需要一个最小 package 描述
+RUN cat > /build/pubspec.yaml <<'YAML'
+name: check_d
+environment:
+  sdk: ^3.5.0
+YAML
+RUN dart pub get && dart compile exe tools/m2-engine/bin/serve.dart -o /build/m2-engine
+
+# ---- stage 2: 你的服务镜像 ----
+FROM <你的 base image>
+COPY --from=engine-build /build/m2-engine /usr/local/bin/m2-engine
+# 与你的 app 一起启动（示例：supervisor 或你自己的 entrypoint 里后台拉起）
+ENV M2_ENGINE_PORT=8787 M2_ENGINE_HOST=127.0.0.1
+# CMD 里加一行，例如：
+#   /usr/local/bin/m2-engine & exec python -m uvicorn app:app --host 0.0.0.0 --port 3000
+```
+
+要点：
+- `M2_ENGINE_HOST=127.0.0.1` 是刻意的：**引擎只监听容器内回环**，公网只暴露你的 `tool_server`。
+- AOT 产物不依赖 Dart 运行时，镜像增量约 6–10 MB。
+- 健康检查：`curl -fsS http://127.0.0.1:8787/health`。
+
+## 方案 B：容器内直接跑源码（不想改构建阶段时）
+
+```dockerfile
+FROM dart:stable
+WORKDIR /app
+COPY . /app
+RUN dart pub get            # 注意：check_d 依赖 flutter，纯 dart 镜像会失败
+```
+
+**这条大概率走不通**：`check_d` 的 `pubspec.yaml` 依赖 Flutter SDK，`dart pub get` 会要求 Flutter。
+若必须走 B，就得换成 `ghcr.io/cirruslabs/flutter:stable` 之类的镜像（体积 1 GB 以上）。
+所以优先 A：A 用最小 pubspec 绕开 Flutter 依赖，只编译引擎需要的两个域文件。
+
+## 方案 C（不推荐，仅作对照）：公网单独部署引擎
+
+需要自建域名 + TLS + 鉴权中间件，且 M0 明确禁止把无鉴权服务直接暴露公网。
+比赛周期内不建议投入。
+
+## 需要 M1 回三个事实才能定稿
+
+1. base image 是什么（Debian / Alpine / distroless / 平台专用）？
+2. 容器里能否跑第二个进程（同一 PID namespace 的 localhost 能否互访）？
+3. 容器是否允许出站访问（构建期拉 `dart:stable`）？
+
+答案一到，我把上面片段改成**可直接 `docker build` 的完整版**，并给出启动与自检命令。
