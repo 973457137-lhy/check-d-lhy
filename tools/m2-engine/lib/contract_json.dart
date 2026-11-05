@@ -249,11 +249,16 @@ MappedInput scheduleInputFromJson(Map<String, dynamic> json) {
     );
   }
 
-  // availability 三态必须原样保留：缺键 = null（允许推导），空数组 = 显式「没有可用时间」。
+  // availability 三态必须原样保留：
+  // - 缺键 或 显式 null = 未提供（允许按 preferences 推导）；
+  // - 空数组 = 显式「没有可用时间」；
+  // - 非空数组 = 只用显式窗口。
+  //
+  // 显式 null 必须与缺键等价：Python 侧 json.dumps({"availability": None}) 会带一个
+  // 真 null，若在这里按「存在即校验」处理会抛 400，等于把「未提供」判成「格式错误」。
   List<ScheduleWindow>? availability;
-  if (json.containsKey('availability')) {
-    final raw = json['availability'];
-    final list = _array(raw, 'input.availability');
+  if (json['availability'] != null) {
+    final list = _array(json['availability'], 'input.availability');
     availability = <ScheduleWindow>[];
     for (var i = 0; i < list.length; i++) {
       final field = 'input.availability[$i]';

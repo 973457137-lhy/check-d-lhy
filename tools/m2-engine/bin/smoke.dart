@@ -192,6 +192,49 @@ void main() async {
     '${repairedProposal['blocks']}',
   );
 
+  stdout.writeln('== 2c. M3 复验三点（F-1/F-2/F-3）==');
+  // F-3：显式 null 必须与缺键等价（Python json.dumps({"availability": None}) 就会带真 null）
+  final nullInput = Map<String, dynamic>.from(_fixture('normal.json')['input'] as Map);
+  nullInput['availability'] = null;
+  final nullRes = handleRequest('POST', '/generate_schedule', {'input': nullInput});
+  _check('availability=null: 200（不当作格式错误）', nullRes.status == 200, '${nullRes.status} ${nullRes.body['error']}');
+  _check(
+    'availability=null: 与缺键同行为（2 块、state=null）',
+    nullRes.status == 200 &&
+        ((nullRes.body['proposal'] as Map)['blocks'] as List).length == normalBlocks.length &&
+        nullRes.body['meta']['availability_state'] == 'null',
+    '${nullRes.status == 200 ? (nullRes.body['proposal'] as Map)['blocks'] : null}',
+  );
+
+  // F-2：max_shift_minutes 非法输入必须 400，不得静默当没传
+  for (final bad in <Object>['10', true, -30, 10.5]) {
+    final res = handleRequest('POST', '/repair_schedule', <String, dynamic>{
+      'input': _fixture('normal.json')['input'],
+      'previous': normalProposal,
+      'max_shift_minutes': bad,
+    });
+    final error = (res.body['error'] as Map?)?.cast<String, dynamic>() ?? const <String, dynamic>{};
+    _check(
+      'max_shift_minutes=$bad 被拒（400 + 指向该字段）',
+      res.status == 400 && error['field'] == 'max_shift_minutes',
+      '${res.status} ${res.body['error']}',
+    );
+  }
+  final zeroShift = handleRequest('POST', '/repair_schedule', <String, dynamic>{
+    'input': _fixture('normal.json')['input'],
+    'previous': normalProposal,
+    'max_shift_minutes': 0,
+  });
+  _check('max_shift_minutes=0 被接受（0 合法，表示不许位移）', zeroShift.status == 200, '${zeroShift.status}');
+
+  // F-1：错误体必须带机器可判定的 retryable
+  final errorEnvelope = handleRequest('POST', '/generate_schedule', <String, dynamic>{'input': <String, dynamic>{}});
+  _check(
+    '错误体带 retryable=false（4xx 不可重试）',
+    errorEnvelope.status == 400 && '${(errorEnvelope.body['error'] as Map?)?['retryable']}' == 'false',
+    '${errorEnvelope.status} ${errorEnvelope.body['error']}',
+  );
+
   stdout.writeln('== 3. 错误路径 ==');  final noOffset = _body(_fixture('normal.json'));
   (noOffset['input'] as Map<String, dynamic>)['now'] = '2026-11-02T08:00:00';
   final rejected = handleRequest('POST', '/generate_schedule', noOffset);

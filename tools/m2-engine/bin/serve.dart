@@ -59,7 +59,13 @@ Future<void> main(List<String> args) async {
       stderr.writeln('[m2-engine] unhandled: $error\n$stack');
       result = HandlerResult(500, {
         'ok': false,
-        'error': {'code': 'INTERNAL_ERROR', 'field': 'server', 'message': '引擎内部错误：$error'},
+        'error': {
+          'code': 'INTERNAL_ERROR',
+          'field': 'server',
+          'message': '引擎内部错误：$error',
+          // 5xx 才可重试；4xx 一律 retryable=false（M3 F-1）。
+          'retryable': true,
+        },
       });
     }
     await _write(response, result, request, stopwatch);

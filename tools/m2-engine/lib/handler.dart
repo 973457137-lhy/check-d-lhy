@@ -83,9 +83,15 @@ Map<String, dynamic>? _inputOf(Map<String, dynamic> envelope) {
   return null;
 }
 
-Map<String, dynamic> _error(String code, String field, String message) => {
+Map<String, dynamic> _error(String code, String field, String message, {bool retryable = false}) => {
   'ok': false,
-  'error': {'code': code, 'field': field, 'message': message},
+  'error': {
+    'code': code,
+    'field': field,
+    'message': message,
+    // 调用方要能机器判定能否重试（M3 F-1）：4xx 一律不可重试，5xx 才可重试。
+    'retryable': retryable,
+  },
 };
 
 HandlerResult _generate(Map<String, dynamic> payload) {
@@ -152,6 +158,30 @@ HandlerResult _repair(Map<String, dynamic> envelope, Map<String, dynamic> payloa
     );
   }
   final titleByTask = {for (final demand in mapped.input.demands) demand.taskId: demand.title};
+
+  // max_shift_minutes 必须显式校验：M3 F-2 实测「字符串 "10" 与 true 被当成没传、-30 被接受」，
+  // 调用方分不清「没传」和「传错」——非法输入不得静默降级。
+  final rawShift = envelope['max_shift_minutes'];
+  int? maxShift;
+  if (rawShift != null) {
+    if (rawShift is! int) {
+      return HandlerResult(
+        400,
+        _error(
+          'INVALID_ARGUMENT',
+          'max_shift_minutes',
+          '必须是整数分钟数；收到 ${rawShift.runtimeType}。省略该字段表示不设位移边界。',
+        ),
+      );
+    }
+    if (rawShift < 0) {
+      return HandlerResult(
+        400,
+        _error('INVALID_ARGUMENT', 'max_shift_minutes', '不得为负数；收到 $rawShift。'),
+      );
+    }
+    maxShift = rawShift;
+  }
   final previous = ScheduleProposal(
     blocks: _blockViewsFromJson(previousJson['blocks'])
         .map(
@@ -166,11 +196,10 @@ HandlerResult _repair(Map<String, dynamic> envelope, Map<String, dynamic> payloa
         )
         .toList(),
   );
-  final maxShift = envelope['max_shift_minutes'];
   final proposal = repairSchedule(
     mapped.input,
     previous,
-    maxShiftMinutes: maxShift is int ? maxShift : null,
+    maxShiftMinutes: maxShift,
   );
   return HandlerResult(200, {
     'ok': true,
@@ -180,7 +209,7 @@ HandlerResult _repair(Map<String, dynamic> envelope, Map<String, dynamic> payloa
       'changes': proposal.changes.length,
       'unplanned_tasks': proposal.unplannedTasks.length,
       'explanations': proposal.notes.length,
-      'max_shift_minutes': maxShift is int ? maxShift : null,
+      'max_shift_minutes': maxShift,
     },
     if (mapped.warnings.isNotEmpty) 'warnings': mapped.warnings,
   });
