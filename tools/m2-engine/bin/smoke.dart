@@ -153,8 +153,46 @@ void main() async {
     '${(bad.body['violations'] as List?)?.map((violation) => violation['message']).toList()}',
   );
 
-  stdout.writeln('== 3. 错误路径 ==');
-  final noOffset = _body(_fixture('normal.json'));
+  stdout.writeln('== 2b. 三态过线 / 确定性 / 重排 ==');
+  // availability=[] 必须原样过线：空数组是「显式没有时间」，不得回退偏好推导。
+  final emptyInput = Map<String, dynamic>.from(_fixture('normal.json')['input'] as Map);
+  emptyInput['availability'] = <Object?>[];
+  final emptyRes = handleRequest('POST', '/generate_schedule', {'input': emptyInput});
+  final emptyProposal = (emptyRes.body['proposal'] as Map).cast<String, dynamic>();
+  final emptyUnplanned = (emptyProposal['unplanned_tasks'] as List).cast<Map<String, dynamic>>();
+  _check('availability=[]: 0 块', (emptyProposal['blocks'] as List).isEmpty, '${(emptyProposal['blocks'] as List).length}');
+  _check(
+    'availability=[]: 全部进 unplanned 且 reason_code=NO_AVAILABILITY',
+    emptyUnplanned.isNotEmpty && emptyUnplanned.every((task) => '${task['reason_code']}' == 'NO_AVAILABILITY'),
+    '${emptyUnplanned.map((task) => task['reason_code']).toList()}',
+  );
+  _check(
+    'availability=[]: meta 标 empty（与缺键的 null 区分）',
+    emptyRes.body['meta']['availability_state'] == 'empty',
+    '${emptyRes.body['meta']['availability_state']}',
+  );
+
+  // 确定性：引擎不读系统时钟，同输入两次必须逐字节相同。
+  final again = handleRequest('POST', '/generate_schedule', _body(_fixture('normal.json')));
+  _check(
+    '同输入两次输出逐字节相同',
+    jsonEncode(again.body) == jsonEncode(normal.body),
+    '两次结果不一致',
+  );
+
+  final repaired = handleRequest('POST', '/repair_schedule', <String, dynamic>{
+    'input': _fixture('normal.json')['input'],
+    'previous': normalProposal,
+  });
+  final repairedProposal = (repaired.body['proposal'] as Map?)?.cast<String, dynamic>() ?? const <String, dynamic>{};
+  _check('repair_schedule: 200', repaired.status == 200, '${repaired.status} ${repaired.body['error']}');
+  _check(
+    'repair_schedule: 仍产出块',
+    ((repairedProposal['blocks'] as List?) ?? const []).isNotEmpty,
+    '${repairedProposal['blocks']}',
+  );
+
+  stdout.writeln('== 3. 错误路径 ==');  final noOffset = _body(_fixture('normal.json'));
   (noOffset['input'] as Map<String, dynamic>)['now'] = '2026-11-02T08:00:00';
   final rejected = handleRequest('POST', '/generate_schedule', noOffset);
   _check('无偏移时间被拒: 400', rejected.status == 400, '${rejected.status}');
