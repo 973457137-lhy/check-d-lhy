@@ -123,6 +123,26 @@ curl -s -X POST http://127.0.0.1:8787/generate_schedule \
 
 （本机有 `http_proxy` 时加 `--noproxy '*'`，否则 curl 会走代理连不上 127.0.0.1。）
 
+## M1 侧调用示例（Python，仅标准库）
+
+`examples/call_engine.py` 只用 `urllib`，**不需要 pip install**，并显式禁用代理：
+
+```bash
+python tools/m2-engine/examples/call_engine.py health
+python tools/m2-engine/examples/call_engine.py generate tools/m2-engine/fixtures/normal.json
+python tools/m2-engine/examples/call_engine.py validate tools/m2-engine/fixtures/normal.json
+```
+
+实测输出（Dart 3.13.7 + Python 3.13.14，日志 `docs/scheduler/reports/2026-11-05-python-client.log`）：
+
+```
+generate normal    → blocks=2 changes=2 unplanned=0 planned_minutes=120，exit 0
+generate conflict  → blocks=0 changes=0 unplanned=1（WINDOW_INSUFFICIENT），exit 0
+validate normal    → valid=True violations=0，exit 0
+```
+
+Python 侧只需把 `BASE` 改成实际地址；`validate` 退出码约定：`0` = 通过，`1` = 有不通过项或调用失败，便于 CI/脚本串起来。
+
 ## 五条口径（踩过坑，写下来省下一次扯皮）
 
 1. **时间必须带偏移**。`DateTime.parse('+08:00')` 得到的是 UTC 瞬时，而引擎的语义是
