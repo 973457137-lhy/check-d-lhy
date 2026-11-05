@@ -7,7 +7,7 @@
 /// 3. **只做映射**：这里不实现任何排程语义，语义全部在 domain 引擎里。
 library;
 
-import 'package:check_d/features/agent_scheduler/domain/schedule_contract.dart';
+import '../../../lib/features/agent_scheduler/domain/schedule_contract.dart';
 
 /// 请求体不符合契约时的异常。
 ///

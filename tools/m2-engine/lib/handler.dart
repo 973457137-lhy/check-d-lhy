@@ -4,8 +4,8 @@
 /// 不会出现「curl 通了但脚本走另一条分支」的假通过。
 library;
 
-import 'package:check_d/features/agent_scheduler/domain/schedule_contract.dart';
-import 'package:check_d/features/agent_scheduler/domain/schedule_engine.dart';
+import '../../../lib/features/agent_scheduler/domain/schedule_contract.dart';
+import '../../../lib/features/agent_scheduler/domain/schedule_engine.dart';
 
 import 'contract_json.dart';
 import 'validate.dart';

@@ -12,7 +12,7 @@
 /// 结构化关联一律放 `related_*_ids`。
 library;
 
-import 'package:check_d/features/agent_scheduler/domain/schedule_contract.dart';
+import '../../../lib/features/agent_scheduler/domain/schedule_contract.dart';
 
 /// 一条 violation。
 class Violation {

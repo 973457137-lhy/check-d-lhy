@@ -1,3 +1,9 @@
+# M2 引擎容器化片段（**历史方案，已被 PACKAGING.md 取代**）
+#
+# M1 2026-11-05 17:24Z /diag 实测：平台不跑 docker build，但容器内已装 /opt/flutter，
+# 引擎也已改为相对导入——直接用 deploy/PACKAGING.md 里的最小包 + dart run，不需要本文件。
+# 保留本文件只为记录方案对比（A/B/C）。
+
 # M2 引擎容器化片段（给 M1 的 tool_server 同容器部署用）
 
 > 目的：让 M1 的 `tool_server` 用 `http://127.0.0.1:8787` 调 M2 引擎，**不需要把引擎暴露公网**。
