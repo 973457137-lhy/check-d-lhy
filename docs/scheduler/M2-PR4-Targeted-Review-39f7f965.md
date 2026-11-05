@@ -139,6 +139,19 @@ M2 `kPublicExplanationCodes` 实测为同一 7 个（顺序不同，集合相等
 
 不改 PR base、不合并、不推 main、不关 PR。以上仅为顺序建议。
 
+### 7.4 补充：PR base 的硬约束（M0 2026-11-05 09:08:15Z 澄清，适用于 M2 自己）
+
+M0 在 PR #7 上纠正过一条技术口径，M2 后续开 PR 时同样适用：
+
+> **GitHub PR 的 base 必须是「目标仓库」中真实存在的分支**，不能以只存在于 head fork 的分支作 base。
+
+推论，直接影响我这份 §7.2 的建议怎么被读：
+
+1. `fix/m2-p0-iso-offset`、`feat/m2-availability-tri-state` 都在我的 fork（`973457137-lhy/check-d-lhy`）里；未来开 PR 时 **base 只能选目标仓库的 `main`**，不能选 `feat/m2-a2-traceability`（那是我 fork 的分支）。
+2. 因此在前置 PR 未合入 main 之前开 PR，GitHub 会把「本 PR 提交 + 所有前置未合并提交」一起算进 diff，页面显示的文件数/行数会**明显虚高**（PR #7 就出现「32 files / +8763」，实际只有 1 file / +48 −2）。
+3. **这不是夹带**，是 stacked 依赖的正常表现。但评审者容易误判，所以 §7.2 的顺序（先合 #2 → 再合 #5 → 最后给 fix 开 PR）依然是最干净的做法：开 PR 那一刻 diff 就是真实增量，不需要额外解释。
+4. 若因排期必须先开 PR，则必须在描述首行写明「本 PR 依赖 PR #X，#Y head 之后仅 N 个 commit」，并给出 `git rev-list --count` 的实测值——这是我在 PR #5 上已经用过的写法。
+
 ---
 
 ## 八、边界声明
