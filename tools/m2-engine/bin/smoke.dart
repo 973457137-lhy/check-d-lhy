@@ -587,6 +587,55 @@ void main() async {
     'err=${emptyErr?.status}',
   );
 
+  // action 的判据必须是「同任务 **且同一天** 是否有既有安排」。
+  // 只验「有安排→reschedule」不够：若实现漏了日期维度，所有跨天情况都会被误标成改期，
+  // 结果是把「新建」当「更新」写进库，静默覆盖别的日期。
+  Map<String, dynamic> placementBody({String? placementDay}) => {
+        'input': <String, dynamic>{
+          'now': '2026-11-02T08:00:00+08:00',
+          'horizon_start': '2026-11-02T00:00:00+08:00',
+          'horizon_end': '2026-11-02T22:00:00+08:00',
+          'base_version': 'v1',
+          'availability': <Map<String, String>>[
+            {'start_at': '2026-11-02T08:00:00+08:00', 'end_at': '2026-11-02T18:00:00+08:00'},
+          ],
+          'demands': <Map<String, Object>>[
+            {'task_id': 't-x', 'title': '任务X', 'required_minutes': 30},
+          ],
+          if (placementDay != null)
+            'existing_placements': <Map<String, String>>[
+              {
+                'task_id': 't-x',
+                'start_at': '${placementDay}T14:00:00+08:00',
+                'end_at': '${placementDay}T14:30:00+08:00',
+              },
+            ],
+        },
+      };
+  String? actionOf(HandlerResult res) {
+    final changes = ((res.body['proposal'] as Map?)?['changes'] as List?) ?? const [];
+    if (changes.isEmpty) return null;
+    return '${(changes.first as Map)['action']}';
+  }
+
+  _check(
+    '无既有安排 → action=assign（首次指派）',
+    actionOf(handleRequest('POST', '/generate_schedule', placementBody())) == 'assign',
+    '${actionOf(handleRequest('POST', '/generate_schedule', placementBody()))}',
+  );
+  _check(
+    '同一天有既有安排 → action=reschedule（改期）',
+    actionOf(handleRequest('POST', '/generate_schedule', placementBody(placementDay: '2026-11-02'))) ==
+        'reschedule',
+    '${actionOf(handleRequest('POST', '/generate_schedule', placementBody(placementDay: '2026-11-02')))}',
+  );
+  _check(
+    '别的日期有既有安排 → 仍 action=assign（日期维度不得漏，否则把新建当更新）',
+    actionOf(handleRequest('POST', '/generate_schedule', placementBody(placementDay: '2026-11-03'))) ==
+        'assign',
+    '${actionOf(handleRequest('POST', '/generate_schedule', placementBody(placementDay: '2026-11-03')))}',
+  );
+
   stdout.writeln('== 3. 错误路径 ==');  final noOffset = _body(_fixture('normal.json'));
   (noOffset['input'] as Map<String, dynamic>)['now'] = '2026-11-02T08:00:00';
   final rejected = handleRequest('POST', '/generate_schedule', noOffset);

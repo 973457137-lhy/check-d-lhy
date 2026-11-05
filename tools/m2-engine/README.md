@@ -19,7 +19,7 @@ dart run tools/m2-engine/bin/serve.dart
 
 ```bash
 dart run tools/m2-engine/bin/smoke.dart
-# 末行 SMOKE OK，退出码 0；当前 70 项断言
+# 末行 SMOKE OK，退出码 0；当前 73 项断言
 ```
 
 ## 端点
