@@ -4,6 +4,7 @@
 /// 不会出现「curl 通了但脚本走另一条分支」的假通过。
 library;
 
+import 'dart:convert';
 import '../../../lib/features/agent_scheduler/domain/schedule_contract.dart';
 import '../../../lib/features/agent_scheduler/domain/schedule_engine.dart';
 
@@ -83,16 +84,30 @@ Map<String, dynamic>? _inputOf(Map<String, dynamic> envelope) {
   return null;
 }
 
-Map<String, dynamic> _error(String code, String field, String message, {bool retryable = false}) => {
-  'ok': false,
-  'error': {
-    'code': code,
-    'field': field,
-    'message': message,
-    // 调用方要能机器判定能否重试（M3 F-1）：4xx 一律不可重试，5xx 才可重试。
-    'retryable': retryable,
-  },
-};
+/// 构造统一错误体。
+///
+/// 必须**唯一**：只要有一处错误体是手搓的，就会出现「有的错误有 retryable、有的没有」，
+/// 调用方按 `.error.retryable` 读就会在某些分支上拿到 null 甚至崩溃。
+Map<String, dynamic> _error(String code, String field, String message, {bool retryable = false}) =>
+    errorBody(code: code, field: field, message: message, retryable: retryable);
+
+/// 对外公开的错误体构造（HTTP 层的 JSON 解析失败等分支也复用它，不得另写一份）。
+Map<String, dynamic> errorBody({
+  required String code,
+  required String field,
+  required String message,
+  bool retryable = false,
+}) =>
+    {
+      'ok': false,
+      'error': {
+        'code': code,
+        'field': field,
+        'message': message,
+        // 调用方要能机器判定能否重试（M3 F-1）：4xx 一律不可重试，5xx 才可重试。
+        'retryable': retryable,
+      },
+    };
 
 HandlerResult _generate(Map<String, dynamic> payload) {
   final mapped = scheduleInputFromJson(payload);
@@ -331,4 +346,31 @@ DateTime? _previousStartOf(List<ProposedBlock> previous, String taskId, DateTime
     if (found == null || start.isBefore(found)) found = start;
   }
   return found;
+}
+
+/// 把 HTTP 原始请求体解码成 `handleRequest` 的入参，**失败时返回现成的 400 结果**。
+///
+/// 抽到这里的目的只有一条：让「非法 JSON 也带 retryable」这件事能被自检直接测到。
+/// 若把它留在 `bin/serve.dart` 里，自检只能再抄一份解码逻辑才能验——那就变成
+/// 「测的是副本、跑的是另一份」，正是本项目反复踩过的假通过。
+///
+/// 返回 null 表示解码成功，结果写回 [decoded]。
+HandlerResult? decodeBodyOrError(String raw, {required void Function(Object? body) onDecoded}) {
+  if (raw.trim().isEmpty) {
+    onDecoded(null);
+    return null;
+  }
+  try {
+    onDecoded(jsonDecode(raw));
+    return null;
+  } on FormatException catch (error) {
+    return HandlerResult(
+      400,
+      errorBody(
+        code: 'INVALID_ARGUMENT',
+        field: 'body',
+        message: '不是合法 JSON：${error.message}',
+      ),
+    );
+  }
 }

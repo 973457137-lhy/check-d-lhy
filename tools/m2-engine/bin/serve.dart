@@ -40,33 +40,30 @@ Future<void> main(List<String> args) async {
         result = const HandlerResult(204, {'ok': true});
       } else {
         final raw = await utf8.decoder.bind(request).join();
+        // 解码逻辑放在 lib/handler.dart 里，与自检共用同一份实现。
+        // 留在这里的话，自检只能再抄一份才能验「非法 JSON 也带 retryable」，
+        // 于是测的是副本、跑的是另一份——本项目反复踩过的假通过形态。
         Object? body;
-        if (raw.trim().isNotEmpty) {
-          try {
-            body = jsonDecode(raw);
-          } on FormatException catch (error) {
-            result = HandlerResult(400, {
-              'ok': false,
-              'error': {'code': 'INVALID_ARGUMENT', 'field': 'body', 'message': '不是合法 JSON：${error.message}'},
-            });
-            await _write(response, result, request, stopwatch);
-            continue;
-          }
+        final decodeError = decodeBodyOrError(raw, onDecoded: (value) => body = value);
+        if (decodeError != null) {
+          result = decodeError;
+          await _write(response, result, request, stopwatch);
+          continue;
         }
         result = handleRequest(request.method, request.uri.path, body);
       }
     } catch (error, stack) {
       stderr.writeln('[m2-engine] unhandled: $error\n$stack');
-      result = HandlerResult(500, {
-        'ok': false,
-        'error': {
-          'code': 'INTERNAL_ERROR',
-          'field': 'server',
-          'message': '引擎内部错误：$error',
-          // 5xx 才可重试；4xx 一律 retryable=false（M3 F-1）。
-          'retryable': true,
-        },
-      });
+      // 5xx 才可重试；4xx 一律 retryable=false（M3 F-1）。同样复用统一构造。
+      result = HandlerResult(
+        500,
+        errorBody(
+          code: 'INTERNAL_ERROR',
+          field: 'server',
+          message: '引擎内部错误：$error',
+          retryable: true,
+        ),
+      );
     }
     await _write(response, result, request, stopwatch);
   }

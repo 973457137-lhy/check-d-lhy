@@ -559,6 +559,34 @@ void main() async {
     '${wideShift.body['warnings']}',
   );
 
+  // 错误体必须**处处**带 retryable（M3 F-1），包括「请求体根本不是合法 JSON」这条分支。
+  // 这条分支原先在 serve.dart 里手搓错误体，漏了 retryable：调用方按 .error.retryable 读，
+  // 在别的错误上拿到 bool、在这条上拿到 null，于是「重试逻辑时灵时不灵」。
+  for (final malformed in <String>['{not json', '{"a":', '<<<']) {
+    Object? decoded;
+    final err = decodeBodyOrError(malformed, onDecoded: (value) => decoded = value);
+    final errorMap = (err?.body['error'] as Map?)?.cast<String, dynamic>() ?? const <String, dynamic>{};
+    _check(
+      '非法 JSON（$malformed）: 400 且 error.retryable 是 bool false',
+      err != null && err.status == 400 && errorMap['retryable'] is bool && errorMap['retryable'] == false,
+      'status=${err?.status} retryable=${errorMap['retryable']} type=${errorMap['retryable'].runtimeType}',
+    );
+  }
+  Object? okDecoded;
+  final okErr = decodeBodyOrError('{"x":1}', onDecoded: (value) => okDecoded = value);
+  _check(
+    '合法 JSON: 不返回错误，正常解码（对照，证明上面不是恒报错）',
+    okErr == null && okDecoded is Map,
+    'err=${okErr?.status} decoded=$okDecoded',
+  );
+  Object? emptyDecoded;
+  final emptyErr = decodeBodyOrError('   ', onDecoded: (value) => emptyDecoded = value);
+  _check(
+    '空请求体: 不在这里报错，交给 handleRequest 统一判（避免两处口径）',
+    emptyErr == null && emptyDecoded == null,
+    'err=${emptyErr?.status}',
+  );
+
   stdout.writeln('== 3. 错误路径 ==');  final noOffset = _body(_fixture('normal.json'));
   (noOffset['input'] as Map<String, dynamic>)['now'] = '2026-11-02T08:00:00';
   final rejected = handleRequest('POST', '/generate_schedule', noOffset);
