@@ -109,6 +109,39 @@ void main() async {
   _check('validate(引擎自产): 无 violation', selfCheck.body['valid'] == true, '${selfCheck.body['violations']}');
   _check('validate(引擎自产): source=engine-generated', selfCheck.body['proposal_source'] == 'engine-generated', '${selfCheck.body['proposal_source']}');
 
+  // 生成器 ↔ 校验器同源：把引擎自己产出的提案原样送去校验，必须 valid。
+  // 这是 M0 P0-1 第五条「生成器与校验器必须使用一致的截止判断逻辑」的可执行证据。
+  for (final name in ['normal.json', 'conflict.json', 'already_done.json']) {
+    final generated = handleRequest('POST', '/generate_schedule', _body(_fixture(name)));
+    final backCheck = handleRequest('POST', '/validate_schedule', <String, dynamic>{
+      'input': _fixture(name)['input'],
+      'proposal': (generated.body['proposal'] as Map).cast<String, dynamic>(),
+    });
+    final codes = ((backCheck.body['violations'] as List?) ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map((violation) => '${violation['code']}')
+        .toList();
+    _check(
+      '生成器产物再校验必须 valid（$name）',
+      backCheck.status == 200 && backCheck.body['valid'] == true,
+      '${backCheck.status} ${backCheck.body['valid']} codes=$codes',
+    );
+  }
+
+  // 显式全忙（availability=[]）时也必须是 valid 的空提案：不是「零块=出错」。
+  final emptyInputForValidate = Map<String, dynamic>.from(_fixture('normal.json')['input'] as Map);
+  emptyInputForValidate['availability'] = <Object?>[];
+  final emptyGenerated = handleRequest('POST', '/generate_schedule', {'input': emptyInputForValidate});
+  final emptyBackCheck = handleRequest('POST', '/validate_schedule', <String, dynamic>{
+    'input': emptyInputForValidate,
+    'proposal': (emptyGenerated.body['proposal'] as Map).cast<String, dynamic>(),
+  });
+  _check(
+    '全忙时的空提案也是 valid（0 块不等于非法）',
+    emptyBackCheck.status == 200 && emptyBackCheck.body['valid'] == true,
+    '${emptyBackCheck.status} ${emptyBackCheck.body['valid']} ${emptyBackCheck.body['violations']}',
+  );
+
   final badProposal = {
     'blocks': [
       {
