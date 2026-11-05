@@ -508,6 +508,57 @@ void main() async {
     '${repairNoPlacement.status} ${repairNoPlacement.body['warnings']}',
   );
 
+  // max_shift_minutes 是**搜索边界**不是硬约束：边界内无解会退「最早可用」，排出超限位移。
+  // 调用方很容易把它读成保证，故必须报出来；同时要有「不超限就不报」的对照，
+  // 否则「永远告警」的实现也能骗过上面那条。
+  Map<String, dynamic> farShiftBody({int? maxShift}) => {
+        'input': <String, dynamic>{
+          'now': '2026-11-02T07:00:00+08:00',
+          'horizon_start': '2026-11-02T00:00:00+08:00',
+          'horizon_end': '2026-11-02T22:00:00+08:00',
+          'base_version': 'v1',
+          'availability': <Map<String, String>>[
+            {'start_at': '2026-11-02T08:00:00+08:00', 'end_at': '2026-11-02T09:00:00+08:00'},
+          ],
+          'demands': <Map<String, Object>>[
+            {'task_id': 't-a', 'title': '任务A', 'required_minutes': 30},
+          ],
+        },
+        'previous': <String, dynamic>{
+          'blocks': <Map<String, String>>[
+            {
+              'task_id': 't-a',
+              'block_id': 'b1',
+              'task_kind': 'recurring',
+              'start_at': '2026-11-02T15:00:00+08:00',
+              'end_at': '2026-11-02T15:30:00+08:00',
+            },
+          ],
+        },
+        if (maxShift != null) 'max_shift_minutes': maxShift,
+      };
+  bool hasShiftOverrunWarning(HandlerResult res) =>
+      ((res.body['warnings'] as List?) ?? const [])
+          .any((w) => '$w'.contains('未能满足') && '$w'.contains('位移'));
+
+  final tinyShift = handleRequest('POST', '/repair_schedule', farShiftBody(maxShift: 10));
+  _check(
+    'max_shift_minutes=10 但实际要挪 420 分钟: 仍 200，且 warnings 点名超限',
+    tinyShift.status == 200 && hasShiftOverrunWarning(tinyShift),
+    '${tinyShift.status} ${tinyShift.body['warnings']}',
+  );
+  _check(
+    'max_shift_minutes=10: warnings 里带真实位移数字（420）便于核对',
+    ((tinyShift.body['warnings'] as List?) ?? const []).any((w) => '$w'.contains('420')),
+    '${tinyShift.body['warnings']}',
+  );
+  final wideShift = handleRequest('POST', '/repair_schedule', farShiftBody(maxShift: 600));
+  _check(
+    'max_shift_minutes=600 且位移 420 未超限: 不得误报（对照）',
+    wideShift.status == 200 && !hasShiftOverrunWarning(wideShift),
+    '${wideShift.body['warnings']}',
+  );
+
   stdout.writeln('== 3. 错误路径 ==');  final noOffset = _body(_fixture('normal.json'));
   (noOffset['input'] as Map<String, dynamic>)['now'] = '2026-11-02T08:00:00';
   final rejected = handleRequest('POST', '/generate_schedule', noOffset);

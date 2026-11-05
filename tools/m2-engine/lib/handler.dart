@@ -212,6 +212,28 @@ HandlerResult _repair(Map<String, dynamic> envelope, Map<String, dynamic> payloa
       '若上一版提案已写入数据库，请传 existing_placements，否则会把「改期」误标成「新建」。',
     );
   }
+
+  // max_shift_minutes 是**搜索边界**而不是硬约束：边界内无解时引擎退「最早可用」，
+  // 会排出超过该上限的位移且不报错。调用方（和它背后的用户）很容易把它读成保证，
+  // 故此处把实际超限的块逐个点名——不改变引擎行为，只让违反可见。
+  if (maxShift != null) {
+    final overruns = <String>[];
+    for (final block in proposal.blocks) {
+      final before = _previousStartOf(previous.blocks, block.taskId, block.startAt);
+      if (before == null) continue;
+      final delta = toShanghaiWallClock(block.startAt).difference(before).inMinutes.abs();
+      if (delta > maxShift) {
+        overruns.add('${block.taskId}（位移 $delta 分钟 > 上限 $maxShift）');
+      }
+    }
+    if (overruns.isNotEmpty) {
+      warnings.add(
+        'max_shift_minutes=$maxShift 未能满足：${overruns.join('、')}。'
+        '该参数只是搜索边界，边界内无解时引擎退「最早可用」，不会拒排也不会报错；'
+        '若这些块不允许这样移动，请改由服务端拒绝该提案。',
+      );
+    }
+  }
   return HandlerResult(200, {
     'ok': true,
     'proposal': proposal.toJson(),
@@ -294,4 +316,19 @@ String _isoInstant(DateTime value) {
   String two(int v) => v.toString().padLeft(2, '0');
   return '${shanghai.year.toString().padLeft(4, '0')}-${two(shanghai.month)}-${two(shanghai.day)}'
       'T${two(shanghai.hour)}:${two(shanghai.minute)}:${two(shanghai.second)}+08:00';
+}
+
+/// 在上一版提案里找「同一任务、同一天」那个块的开始时刻（用于算实际位移）。
+///
+/// 只认同一天：跨天比较没有意义（跨天是重新安排另一天，不是把这块挪过去）。
+DateTime? _previousStartOf(List<ProposedBlock> previous, String taskId, DateTime newStart) {
+  final newDay = scheduleDayOnly(toShanghaiWallClock(newStart));
+  DateTime? found;
+  for (final block in previous) {
+    if (block.taskId != taskId) continue;
+    final start = toShanghaiWallClock(block.startAt);
+    if (scheduleDayOnly(start) != newDay) continue;
+    if (found == null || start.isBefore(found)) found = start;
+  }
+  return found;
 }
