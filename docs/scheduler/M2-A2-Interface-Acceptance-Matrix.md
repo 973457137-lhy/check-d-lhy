@@ -484,6 +484,14 @@ A1 卷 5 项 5 的风险描述：「M2 侧若在 `toJson()` 里把 `null` 归一
 
 **结论**：这是**小改动、向后兼容、零既有用例破坏**（因无人显式传 `[]`），但**语义变更须 M0 先裁**，M2 不自行改。
 
+### 10.3.1 D3 已裁定并落地（2026-11-05 08:01:41Z M0 裁定 C2）
+
+上面 10.3 的「待裁定」状态**已结束**。M0 裁定三态：`null` 可推导 / `[]` 显式无时间且禁止推导 / 非空只用显式。
+
+已按最小面落地：`ScheduleInput.availability` 改为 `List<ScheduleWindow>?`（默认 `null`）、`_effectiveAvailability` 仅 `null` 才推导；新增 2 条测试（三态对照 + 序列化守卫），**56 → 58**，两通道 58/58。改动未合并，落点待 M0 指定。
+
+详见 `docs/scheduler/M2-C2-Availability-Tri-State.md`；实现 commit `88a41a1`（分支 `feat/m2-availability-tri-state`）。
+
 ### 10.4 引用口径
 
 本节点所有行号均对 `fix/m2-p0-iso-offset @ e607e67` 的 `schedule_contract.dart` / `schedule_engine.dart` / `test/agent_scheduler_test.dart`。按 M1 §0.4 第一条：引用时须带「行号 + 本版字节/行数 + 指纹前缀」，故本节行号**只在与该 commit 同时引用时有效**。
