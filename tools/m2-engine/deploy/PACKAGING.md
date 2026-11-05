@@ -94,3 +94,24 @@ def start_engine(workspace="/workspace"):
 ```
 
 它证明的是：端点、编解码、+08:00 墙钟、三态、非法输入拒绝、确定性都在当前环境成立。
+
+## 七、这个包已经按「干净拷贝」实测过（2026-11-06 01:55 +08）
+
+不是「应该能跑」，是真跑过：把上面 10 个文件（共 **136 KB**）拷到一个**没有 pubspec、
+没有 .dart_tool、没有 git** 的空目录 `/e/m2-pack`，然后：
+
+```bash
+cd /e/m2-pack
+dart run tools/m2-engine/bin/smoke.dart
+# 通过 46 项，失败 0 项 / SMOKE OK / exit 0
+
+M2_ENGINE_PORT=8899 dart run tools/m2-engine/bin/serve.dart
+curl -s http://127.0.0.1:8899/health
+# {"ok":true,"service":"m2-engine","version":"1.0.0","contract_basis":"39f7f965",...}
+curl -s -X POST http://127.0.0.1:8899/generate_schedule \
+  -H 'content-type: application/json' -d @tools/m2-engine/fixtures/normal.json
+# {"ok":true,"proposal":{"blocks":[{"block_id":"blk-t_eng",...}]...}}
+```
+
+冷启动（含首次编译）约 **15 秒**；期间 `/health` 不通是正常的，按第三节的轮询即可。
+
