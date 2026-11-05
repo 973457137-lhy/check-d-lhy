@@ -415,6 +415,64 @@ void main() async {
             .any((v) => '${(v as Map)['code']}' == 'MULTIPLE_CHANGES_FOR_ONE_TIME_TASK'),
     '${sameDayDup.body['valid']} ${sameDayDup.body['violations']}',
   );
+
+  // date_only 截止的跨午夜边界：M0 待裁的「23:59:59 vs 次日 00:00」到底差多少。
+  // 结论先行：分钟粒度下两种写法**完全等价**——唯一的分界点就是次日 00:00，两边都拒；
+  // 23:59 两边都放。真正要防的是「因为怕跨午夜而把合法块也拒了」，故下面四条成对验证。
+  Map<String, dynamic> midnightBody({required int minutes, String? deadlineDate}) => {
+        'input': <String, dynamic>{
+          'now': '2026-11-02T20:00:00+08:00',
+          'horizon_start': '2026-11-02T00:00:00+08:00',
+          'horizon_end': '2026-11-03T06:00:00+08:00',
+          'base_version': 'v1',
+          'availability': <Map<String, String>>[
+            {'start_at': '2026-11-02T23:00:00+08:00', 'end_at': '2026-11-03T00:00:00+08:00'},
+          ],
+          'demands': <Map<String, Object>>[
+            {
+              'task_id': 't',
+              'title': '任务',
+              'required_minutes': minutes,
+              if (deadlineDate != null) 'deadline': {'kind': 'date_only', 'date': deadlineDate},
+            },
+          ],
+        },
+      };
+  List<Map<String, dynamic>> blocksOf(HandlerResult res) =>
+      (((res.body['proposal'] as Map?)?['blocks'] as List?) ?? const [])
+          .cast<Map<String, dynamic>>();
+  String? unplannedCodeOf(HandlerResult res) {
+    final list = ((res.body['proposal'] as Map?)?['unplanned_tasks'] as List?) ?? const [];
+    if (list.isEmpty) return null;
+    return '${(list.first as Map)['reason_code']}';
+  }
+
+  final todayFull = handleRequest('POST', '/generate_schedule', midnightBody(minutes: 60, deadlineDate: '2026-11-02'));
+  _check(
+    'date_only=今天：60 分钟排在 23:00 会跨到次日 00:00 → 必须不可排',
+    blocksOf(todayFull).isEmpty && unplannedCodeOf(todayFull) == 'INSUFFICIENT_TIME_BEFORE_DEADLINE',
+    'blocks=${blocksOf(todayFull).length} code=${unplannedCodeOf(todayFull)}',
+  );
+  final todayFit = handleRequest('POST', '/generate_schedule', midnightBody(minutes: 59, deadlineDate: '2026-11-02'));
+  _check(
+    'date_only=今天：59 分钟排在 23:00 结束 23:59 → 必须可排（不是一刀切禁跨午夜）',
+    blocksOf(todayFit).length == 1 &&
+        '${blocksOf(todayFit).first['end_at']}' == '2026-11-02T23:59:00+08:00',
+    '${blocksOf(todayFit).map((b) => b['end_at']).toList()} code=${unplannedCodeOf(todayFit)}',
+  );
+  final tomorrowFull = handleRequest('POST', '/generate_schedule', midnightBody(minutes: 60, deadlineDate: '2026-11-03'));
+  _check(
+    'date_only=明天：同样 23:00–次日 00:00 → 必须可排（截止不是今天就不该拦）',
+    blocksOf(tomorrowFull).length == 1 &&
+        '${blocksOf(tomorrowFull).first['end_at']}' == '2026-11-03T00:00:00+08:00',
+    '${blocksOf(tomorrowFull).map((b) => b['end_at']).toList()} code=${unplannedCodeOf(tomorrowFull)}',
+  );
+  final noDeadline = handleRequest('POST', '/generate_schedule', midnightBody(minutes: 60));
+  _check(
+    '无截止：23:00–次日 00:00 必须可排（跨午夜本身不是错）',
+    blocksOf(noDeadline).length == 1,
+    '${blocksOf(noDeadline).map((b) => b['end_at']).toList()} code=${unplannedCodeOf(noDeadline)}',
+  );
   final badMultiDay = Map<String, dynamic>.from(_fixture('normal.json')['input'] as Map)
     ..['authorize_multi_day_overrides'] = 'true';
   final badMultiDayRes = handleRequest('POST', '/generate_schedule', {'input': badMultiDay});

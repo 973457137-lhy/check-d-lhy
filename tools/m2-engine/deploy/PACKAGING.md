@@ -90,7 +90,7 @@ def start_engine(workspace="/workspace"):
 
 ```bash
 /opt/flutter/bin/dart run tools/m2-engine/bin/smoke.dart
-# 末行 SMOKE OK，退出码 0；当前 58 项断言（内部会自己起临时端口跑真实 HTTP）
+# 末行 SMOKE OK，退出码 0；当前 62 项断言（内部会自己起临时端口跑真实 HTTP）
 ```
 
 它证明的是：端点、编解码、+08:00 墙钟、三态、非法输入拒绝、确定性都在当前环境成立。
@@ -103,7 +103,7 @@ def start_engine(workspace="/workspace"):
 ```bash
 cd /e/m2-pack
 dart run tools/m2-engine/bin/smoke.dart
-# 通过 58 项，失败 0 项 / SMOKE OK / exit 0
+# 通过 62 项，失败 0 项 / SMOKE OK / exit 0
 
 M2_ENGINE_PORT=8899 dart run tools/m2-engine/bin/serve.dart
 curl -s http://127.0.0.1:8899/health
