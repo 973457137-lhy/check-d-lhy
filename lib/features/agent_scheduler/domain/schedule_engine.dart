@@ -357,15 +357,51 @@ UnplannedTask _unplanned(
   ScheduleTaskDemand demand,
   int remainingMinutes,
   UnplannedReason reason,
-  String reasonText,
-) {
+  String reasonText, {
+  String? basis,
+  List<String> suggestedActions = const [],
+}) {
   return UnplannedTask(
     taskId: demand.taskId,
     title: demand.title,
     remainingMinutes: remainingMinutes,
     reason: reason,
     reasonText: reasonText,
+    basis: basis,
+    suggestedActions: suggestedActions,
   );
+}
+
+/// 上海墙钟口径的时间戳，用于 `basis` 这类需要可复核的字段。
+String _stamp(DateTime value) {
+  String two(int v) => v.toString().padLeft(2, '0');
+  return '${value.year.toString().padLeft(4, '0')}-${two(value.month)}-'
+      '${two(value.day)}T${two(value.hour)}:${two(value.minute)}+08:00';
+}
+
+/// 截止时刻之前还剩多少分钟**可用**（已扣掉固定日程与已排块）。
+///
+/// 与 [_placeDemand] 用同一套边界：起点取 max(窗口起点, now, earliestStartAt)，
+/// 终点取 min(窗口终点, deadline.latestEndAt)。两处若不同源，
+/// 就会出现「说没时间却排上了」或反之的分叉（M0 P0-1 第五条要求）。
+int _minutesBeforeDeadline(
+  List<ScheduleWindow> free,
+  ScheduleTaskDemand demand,
+  ScheduleInput input,
+) {
+  final deadline = demand.deadline;
+  if (deadline == null) return 1 << 30;
+  final limit = deadline.latestEndAt;
+  var total = 0;
+  for (final window in free) {
+    var start = _later(window.startAt, input.now);
+    final earliest = demand.earliestStartAt;
+    if (earliest != null) start = _later(start, earliest);
+    final end = _earlier(window.endAt, limit);
+    if (!start.isBefore(end)) continue;
+    total += end.difference(start).inMinutes;
+  }
+  return total;
 }
 
 String _clock(DateTime value) {
@@ -477,15 +513,45 @@ ScheduleProposal generateSchedule(ScheduleInput input) {
 
     final deadline = demand.deadline;
     if (deadline != null && deadline.isPast(input.now)) {
+      // P0-1：逾期任务在**进入排程之前**就被拦下，绝不进 blocks，且必须留痕。
+      // 判定依据写事实（两个时刻），不写形容词，便于 M3 独立复核。
       unplanned.add(
         _unplanned(
           demand,
           duration.minutes,
-          UnplannedReason.pastDeadline,
-          '截止时间已过，需要先调整时间再排。',
+          UnplannedReason.unschedulableOverdue,
+          '截止时间已过，本条发生项无法再排入未来。',
+          basis: 'deadline=${_stamp(deadline.latestEndAt)} 早于 now=${_stamp(input.now)}',
+          suggestedActions: const [
+            '把截止时间调整到今天或以后，再重新生成排程',
+            '如果这件事已经不需要做，请把任务标记为完成或归档',
+          ],
         ),
       );
       continue;
+    }
+
+    // P0-3：截止没过，但截止前的可用时间不够——与「整体空闲不够」区分开，
+    // 让用户知道卡点是截止而不是没空。
+    if (deadline != null) {
+      final beforeDeadline = _minutesBeforeDeadline(free, demand, input);
+      if (beforeDeadline < duration.minutes) {
+        unplanned.add(
+          _unplanned(
+            demand,
+            duration.minutes,
+            UnplannedReason.insufficientTimeBeforeDeadline,
+            '截止时间前的可用时间不足 ${duration.minutes} 分钟。',
+            basis: '截止 ${_stamp(deadline.latestEndAt)} 之前可用 $beforeDeadline 分钟，'
+                '需要 ${duration.minutes} 分钟',
+            suggestedActions: const [
+              '缩短本次目标时长，或把它拆成两次较短安排',
+              '把截止时间往后延，腾出足够连续时间',
+            ],
+          ),
+        );
+        continue;
+      }
     }
 
     final block = _placeDemand(free, demand, input);

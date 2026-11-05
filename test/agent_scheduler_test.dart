@@ -156,14 +156,17 @@ void main() {
 
       expect(proposal.blocks, isEmpty);
       expect(proposal.unplannedTasks, hasLength(1));
+      // M0 2026-11-05 17:04Z P0-1：逾期一律用窄口径码，不再落到历史码 PAST_DEADLINE。
       expect(
         proposal.unplannedTasks.single.reason,
-        UnplannedReason.pastDeadline,
+        UnplannedReason.unschedulableOverdue,
       );
       expect(
         proposal.unplannedTasks.single.reason.code,
-        'PAST_DEADLINE',
+        'UNSCHEDULABLE_OVERDUE',
       );
+      expect(proposal.unplannedTasks.single.basis, isNotNull);
+      expect(proposal.unplannedTasks.single.suggestedActions, isNotEmpty);
     });
 
     test('日期型截止整天宽限，不能被当成 23:59 处理', () {
@@ -1968,14 +1971,32 @@ void main() {
         }
       }
 
-      // 未安排项：§5.7 只允许这四个键，`title` 不得混进 JSON。
+      // 未安排项：§5.7 四键 + M0 2026-11-05 17:04Z P0-3 新增三键；`title` 仍不得混进 JSON。
+      const requiredUnplannedKeys = <String>{
+        'task_id',
+        'remaining_minutes',
+        'reason_code',
+        'message',
+        'reason_message',
+      };
+      const allowedUnplannedKeys = <String>{
+        'task_id',
+        'remaining_minutes',
+        'reason_code',
+        'message',
+        'reason_message',
+        'basis',
+        'suggested_actions',
+      };
       final unplanned = json['unplanned_tasks'] as List<dynamic>;
       expect(unplanned, isNotEmpty);
       for (final item in unplanned) {
-        expect(
-          (item as Map<String, dynamic>).keys.toSet(),
-          {'task_id', 'remaining_minutes', 'reason_code', 'message'},
-        );
+        final keys = (item as Map<String, dynamic>).keys.toSet();
+        expect(allowedUnplannedKeys.containsAll(keys), isTrue,
+            reason: '未安排项出现契约外的键：${keys.difference(allowedUnplannedKeys)}');
+        expect(keys.containsAll(requiredUnplannedKeys), isTrue,
+            reason: '未安排项缺少必填键：${requiredUnplannedKeys.difference(keys)}');
+        expect(keys.contains('title'), isFalse, reason: 'title 不得进 JSON');
       }
 
       // 解释：对象数组，键集合 ⊆ {code, message, related_task_ids}。
@@ -2360,6 +2381,152 @@ void main() {
 
       expect(json.containsKey('related_task_ids'), isFalse);
       expect(json.keys.toSet(), <String>{'code', 'message'});
+    });
+  });
+
+  group('P0 逾期与未安排完整性（M0 2026-11-05 17:04Z 集中修复包）', () {
+    test('精确截止已过：进 unplanned 且码为 UNSCHEDULABLE_OVERDUE，带判定依据与建议', () {
+      final input = ScheduleInput(
+        now: _at(0, 12),
+        horizonStart: _at(0, 8),
+        horizonEnd: _at(0, 22),
+        baseVersion: 'v1',
+        availability: [_window(0, 8, 22)],
+        demands: [
+          ScheduleTaskDemand(
+            taskId: 'ovd-exact',
+            title: '交作业（已逾期）',
+            requiredMinutes: 60,
+            deadline: ScheduleDeadline.exact(_at(0, 10)),
+          ),
+        ],
+      );
+
+      final proposal = generateSchedule(input);
+
+      expect(proposal.blocks, isEmpty, reason: '逾期任务不得进 blocks');
+      expect(proposal.unplannedTasks, hasLength(1));
+      final item = proposal.unplannedTasks.single;
+      expect(item.reason.code, 'UNSCHEDULABLE_OVERDUE');
+      expect(item.basis, contains('早于 now'));
+      expect(item.suggestedActions, isNotEmpty);
+      expect(item.remainingMinutes, 60, reason: '不得擅自缩时或改原始 deadline');
+    });
+
+    test('日期型截止已过：同样 UNSCHEDULABLE_OVERDUE，且原 deadline 未被改写', () {
+      final deadline = ScheduleDeadline.dateOnly(_at(-1, 0));
+      final input = ScheduleInput(
+        now: _at(0, 9),
+        horizonStart: _at(0, 9),
+        horizonEnd: _at(0, 22),
+        baseVersion: 'v1',
+        availability: [_window(0, 9, 22)],
+        demands: [
+          ScheduleTaskDemand(
+            taskId: 'ovd-date',
+            title: '昨天的日结',
+            requiredMinutes: 30,
+            deadline: deadline,
+          ),
+        ],
+      );
+
+      final proposal = generateSchedule(input);
+
+      expect(proposal.blocks, isEmpty);
+      expect(proposal.unplannedTasks.single.reason.code, 'UNSCHEDULABLE_OVERDUE');
+      expect(proposal.unplannedTasks.single.basis, isNotNull);
+      // 原始 deadline 对象未被引擎改写
+      expect(deadline.dueDateOn, isNotNull);
+    });
+
+    test('截止未过但截止前可用时间不足：码为 INSUFFICIENT_TIME_BEFORE_DEADLINE', () {
+      final input = ScheduleInput(
+        now: _at(0, 8),
+        horizonStart: _at(0, 8),
+        horizonEnd: _at(1, 22),
+        baseVersion: 'v1',
+        // 只有 60 分钟可用，任务要 90 分钟，且截止在今天 22:00
+        availability: [_window(0, 8, 9)],
+        demands: [
+          ScheduleTaskDemand(
+            taskId: 'short-before-deadline',
+            title: '今天必须交的报告',
+            requiredMinutes: 90,
+            deadline: ScheduleDeadline.exact(_at(0, 22)),
+          ),
+        ],
+      );
+
+      final proposal = generateSchedule(input);
+
+      expect(proposal.blocks, isEmpty);
+      final item = proposal.unplannedTasks.single;
+      expect(item.reason.code, 'INSUFFICIENT_TIME_BEFORE_DEADLINE');
+      expect(item.basis, contains('需要 90 分钟'));
+      expect(item.suggestedActions, isNotEmpty);
+    });
+
+    test('blocks 与 unplanned_tasks 互斥且覆盖：每个需求都有且只有一个结果', () {
+      final input = ScheduleInput(
+        now: _at(0, 8),
+        horizonStart: _at(0, 8),
+        horizonEnd: _at(0, 22),
+        baseVersion: 'v1',
+        availability: [_window(0, 8, 18)],
+        fixedBlocks: [
+          ScheduleFixedBlock(
+            ownerId: 'course-a',
+            ownerType: ScheduleOwnerType.course,
+            startAt: _at(0, 10),
+            endAt: _at(0, 12),
+            title: '算法课',
+          ),
+        ],
+        demands: [
+          ScheduleTaskDemand(taskId: 'ok-1', title: '正常任务', requiredMinutes: 60),
+          ScheduleTaskDemand(
+            taskId: 'ovd-1',
+            title: '逾期任务',
+            requiredMinutes: 30,
+            deadline: ScheduleDeadline.exact(_at(0, 7)),
+          ),
+          ScheduleTaskDemand(
+            taskId: 'too-long',
+            title: '超长任务',
+            requiredMinutes: 600,
+          ),
+          // 当天已完成：既不进 blocks，也不进 unplanned
+          ScheduleTaskDemand(
+            taskId: 'done-1',
+            title: '已完成',
+            requiredMinutes: 30,
+            remainingMinutesToday: 0,
+          ),
+        ],
+      );
+
+      final proposal = generateSchedule(input);
+      final blockIds = proposal.blocks.map((block) => block.taskId).toSet();
+      final unplannedIds = proposal.unplannedTasks.map((task) => task.taskId).toSet();
+
+      expect(blockIds.intersection(unplannedIds), isEmpty, reason: '同一条不得同时出现在两个集合');
+      for (final demand in input.demands) {
+        if (demand.taskId == 'done-1') {
+          expect(blockIds.contains('done-1'), isFalse);
+          expect(unplannedIds.contains('done-1'), isFalse);
+          continue;
+        }
+        final inBlocks = blockIds.contains(demand.taskId);
+        final inUnplanned = unplannedIds.contains(demand.taskId);
+        expect(inBlocks ^ inUnplanned, isTrue,
+            reason: '${demand.taskId} 必须且只能有一个结果（blocks=$inBlocks, unplanned=$inUnplanned）');
+      }
+      // 逾期的那条必须是逾期码，而不是被笼统归到「时间不够」
+      expect(
+        proposal.unplannedTasks.firstWhere((task) => task.taskId == 'ovd-1').reason.code,
+        'UNSCHEDULABLE_OVERDUE',
+      );
     });
   });
 

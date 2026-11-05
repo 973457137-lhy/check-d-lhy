@@ -155,6 +155,20 @@ enum UnplannedReason {
 
   /// 输入没有给出任何可用窗口。
   noAvailability,
+
+  /// **已逾期**：截止时刻已经早于调度基准时刻 [ScheduleInput.now]，
+  /// 无论怎么排都不可能合法（M0 2026-11-05 17:04Z P0-1）。
+  ///
+  /// 与 [pastDeadline] 的区别：后者是历史码，保留用于兼容；
+  /// 新输出一律用本值，语义更窄——「这条发生项本身已经废了」。
+  unschedulableOverdue,
+
+  /// **截止前时间不够**：截止尚未过，但截止之前的所有空闲时段加起来
+  /// 仍不足任务所需分钟数（M0 2026-11-05 17:04Z P0-3）。
+  ///
+  /// 与 [windowInsufficient] 的区别：后者是「整体空闲不够」，
+  /// 本值专指「截止这条约束把可用时间掐没了」。
+  insufficientTimeBeforeDeadline,
 }
 
 /// [UnplannedReason] 的 JSON 编码，供 M0 v1 契约使用。
@@ -164,6 +178,8 @@ extension UnplannedReasonCode on UnplannedReason {
     UnplannedReason.pastDeadline => 'PAST_DEADLINE',
     UnplannedReason.overlapsFixed => 'OVERLAPS_FIXED',
     UnplannedReason.noAvailability => 'NO_AVAILABILITY',
+    UnplannedReason.unschedulableOverdue => 'UNSCHEDULABLE_OVERDUE',
+    UnplannedReason.insufficientTimeBeforeDeadline => 'INSUFFICIENT_TIME_BEFORE_DEADLINE',
   };
 }
 
@@ -539,6 +555,8 @@ class UnplannedTask {
     required this.remainingMinutes,
     required this.reason,
     required this.reasonText,
+    this.basis,
+    this.suggestedActions = const [],
   });
 
   final String taskId;
@@ -550,15 +568,30 @@ class UnplannedTask {
   final UnplannedReason reason;
   final String reasonText;
 
+  /// 判定依据：把「为什么判成这样」写成可复核的事实句（不是形容词）。
+  ///
+  /// 例如「截止 2026-11-05T12:00:00+08:00 早于 now 2026-11-05T18:00:00+08:00」。
+  /// 契约 v1 没有这个键，属 M0 2026-11-05 17:04Z P0-3 要求的新增字段。
+  final String? basis;
+
+  /// 建议动作：给用户/服务端的可执行下一步，不承诺一定可行。
+  final List<String> suggestedActions;
+
   /// 契约第 5.7 节要求每项至少含 `task_id`、`reason_code`、`remaining_minutes`
-  /// 与 `message`。这里的键集合被限制为恰好这四项：
-  /// `title` 保留在 Dart 对象里供进程内展示使用，但不进 JSON——
-  /// 契约没有列出它，`additionalProperties: false` 时会整份提案被拒。
+  /// 与 `message`。这里的键集合在 M0 2026-11-05 17:04Z P0-3 后扩展为：
+  /// `task_id` / `remaining_minutes` / `reason_code` / `reason_message`
+  /// / `basis` / `suggested_actions`。
+  ///
+  /// `message` 保留为 v1 兼容别名（与 `reason_message` 同值），避免打断 M1 现有映射。
+  /// `title` 仍不进 JSON：契约未列出，`additionalProperties: false` 时会整份被拒。
   Map<String, dynamic> toJson() => {
     'task_id': taskId,
     'remaining_minutes': remainingMinutes,
     'reason_code': reason.code,
     'message': reasonText,
+    'reason_message': reasonText,
+    if (basis != null) 'basis': basis,
+    if (suggestedActions.isNotEmpty) 'suggested_actions': suggestedActions,
   };
 }
 
