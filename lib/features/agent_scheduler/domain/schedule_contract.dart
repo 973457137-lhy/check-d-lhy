@@ -280,7 +280,7 @@ class ScheduleTaskDemand {
     this.taskKind = ScheduleTaskKind.recurring,
     this.deadline,
     this.earliestStartAt,
-    this.priority = 0,
+    this.priority,
     this.targetDurationSeconds,
     this.remainingMinutesToday,
   });
@@ -304,8 +304,11 @@ class ScheduleTaskDemand {
   /// 早于该时刻不可开始，通常由 `availableFrom` 映射而来。
   final DateTime? earliestStartAt;
 
-  /// 数值越大越优先，仅在截止条件相同时参与排序。
-  final int priority;
+  /// 服务端给出的优先级；**null = 未提供**，不得自行推测成 0（M0 2026-11-05 17:04Z P1-3）。
+  ///
+  /// 排序时：提供了 priority 的排在未提供的前面（同截止条件下），
+  /// 未提供的按 taskId 稳定排序，并在输出里标 `priority_state=unknown`。
+  final int? priority;
 
   /// 任务自带时长目标。只有传入它，`duration_source` 才是 `task_target`；
   /// 否则调度器给出的是估算，不得被描述成任务固有属性。
@@ -358,6 +361,7 @@ class ScheduleInput {
     this.fixedBlocks = const [],
     this.demands = const [],
     this.existingPlacements = const [],
+    this.authorizeMultiDayOverrides = false,
   });
 
   /// 排程基准时刻：任何块都不能排在它之前。
@@ -395,6 +399,13 @@ class ScheduleInput {
   final List<ScheduleTaskDemand> demands;
 
   final List<SchedulePlacement> existingPlacements;
+
+  /// 是否授权把周期任务的安排**批量写成多日单日例外**（默认 false）。
+  ///
+  /// M0 2026-11-05 17:04Z P1-1：默认不得未经授权把灵活任务永久钉死在固定时间。
+  /// 关闭时：`blocks` 仍可跨多日展示，但 `changes` 只对**最早一天**生成，
+  /// 其余日期没有可落库变更——服务端据此就不会把整个视界写死。
+  final bool authorizeMultiDayOverrides;
 }
 
 /// 提案中的一块展示用安排。未被批准前它只是建议。
@@ -411,6 +422,8 @@ class ProposedBlock {
     this.taskKind = ScheduleTaskKind.recurring,
     this.movedFromPreviousPlan = false,
     this.hasDurationTarget = false,
+    this.orderingReason,
+    this.priorityState = 'unknown',
   });
 
   final String taskId;
@@ -426,6 +439,16 @@ class ProposedBlock {
 
   /// 时长是否来自任务自身的 `duration_target_seconds`。
   final bool hasDurationTarget;
+
+  /// 排程依据：为什么**这块**排在这个位置（M0 2026-11-05 17:04Z P1-2/P1-3）。
+  ///
+  /// 取值是稳定标识而不是自由文本，便于机器比对：
+  /// `earliest_free_slot`（最早可用）、`deadline_first`（截止更早者优先）、
+  /// `priority_order`（同截止下优先级更高者优先）、`stable_input_order`（并列时按 taskId 稳定）。
+  final String? orderingReason;
+
+  /// `provided` = 服务端给了 priority；`unknown` = 没给，引擎**不推测**。
+  final String priorityState;
 
   int get minutes => endAt.difference(startAt).inMinutes;
 
@@ -458,6 +481,8 @@ class ProposedBlock {
     'persistable_as': persistableAs,
     'duration_source': durationSource,
     'duration_seconds': durationSeconds,
+    if (orderingReason != null) 'ordering_reason': orderingReason,
+    'priority_state': priorityState,
   };
 }
 
@@ -514,6 +539,7 @@ class UpsertDailyOverrideChange extends ProposedScheduleChange {
     required this.plannedStartMinute,
     required this.plannedEndMinute,
     this.existingOverrideId,
+    this.action = 'reschedule',
   });
 
   @override
@@ -531,7 +557,15 @@ class UpsertDailyOverrideChange extends ProposedScheduleChange {
   @override
   String get type => 'upsert_daily_override';
 
-  String get action => 'reschedule';
+  /// `assign` = 该任务当天原本没有安排，这是**首次指派**；
+  /// `reschedule` = 当天已有安排，本次是**改期**。
+  ///
+  /// M0 2026-11-05 17:04Z P1-1：无固定时刻的任务不得被错误表达成 reschedule。
+  /// 取值只允许这两个，由引擎按 `existingPlacements` 判定后传入。
+  final String action;
+
+  /// 允许的 action 取值（封闭集）。
+  static const Set<String> allowedActions = <String>{'assign', 'reschedule'};
 
   @override
   Map<String, dynamic> toJson() => {

@@ -175,11 +175,43 @@ List<ScheduleTaskDemand> _orderedDemands(ScheduleInput input) {
   ordered.sort((a, b) {
     final deadline = _deadlineRank(a, input).compareTo(_deadlineRank(b, input));
     if (deadline != 0) return deadline;
-    final priority = b.priority.compareTo(a.priority);
-    if (priority != 0) return priority;
+    // priority 为 null = 服务端未提供：排在有值之后，**不推测成 0**（M0 P1-3）。
+    final pa = a.priority;
+    final pb = b.priority;
+    if (pa != null && pb == null) return -1;
+    if (pa == null && pb != null) return 1;
+    if (pa != null && pb != null && pa != pb) return pb.compareTo(pa);
     return a.taskId.compareTo(b.taskId);
   });
   return ordered;
+}
+
+/// 这条需求**实际**是靠什么排进来的：截止、优先级还是稳定顺序。
+///
+/// 只描述引擎真正用过的依据，不虚构（M0 2026-11-05 17:04Z P1-2/P1-3）。
+String _orderingReasonOf(ScheduleTaskDemand demand) {
+  if (demand.deadline != null) return 'deadline_first';
+  if (demand.priority != null) return 'priority_order';
+  return 'stable_input_order';
+}
+
+/// 给块补上「凭什么排在这里」的机器可读依据。
+///
+/// `ordering_reason` 只写引擎**真正用过**的排序依据；`priority_state` 明确区分
+/// 「服务端给了优先级」与「没给、不推测」（M0 2026-11-05 17:04Z P1-2/P1-3）。
+ProposedBlock _enrich(ProposedBlock block, ScheduleTaskDemand? demand) {
+  if (demand == null) return block;
+  return ProposedBlock(
+    taskId: block.taskId,
+    title: block.title,
+    startAt: block.startAt,
+    endAt: block.endAt,
+    taskKind: block.taskKind,
+    movedFromPreviousPlan: block.movedFromPreviousPlan,
+    hasDurationTarget: block.hasDurationTarget,
+    orderingReason: _orderingReasonOf(demand),
+    priorityState: demand.priority == null ? 'unknown' : 'provided',
+  );
 }
 
 DateTime _deadlineRank(ScheduleTaskDemand demand, ScheduleInput input) {
@@ -554,7 +586,8 @@ ScheduleProposal generateSchedule(ScheduleInput input) {
       }
     }
 
-    final block = _placeDemand(free, demand, input);
+    final placed = _placeDemand(free, demand, input);
+    final block = placed == null ? null : _enrich(placed, demand);
     if (block == null) {
       unplanned.add(
         _unplanned(
@@ -598,7 +631,7 @@ ScheduleProposal generateSchedule(ScheduleInput input) {
 
   return ScheduleProposal(
     blocks: changes,
-    changes: _buildChanges(changes),
+    changes: _buildChanges(changes, input),
     unplannedTasks: unplanned,
     notes: notes,
   );
@@ -719,8 +752,12 @@ ScheduleProposal repairSchedule(
   ordered.sort((a, b) {
     final deadline = _deadlineRank(a, input).compareTo(_deadlineRank(b, input));
     if (deadline != 0) return deadline;
-    final priority = b.priority.compareTo(a.priority);
-    if (priority != 0) return priority;
+    // 与 generateSchedule 同一套 null 语义：未提供优先级排在有值之后，不推测成 0。
+    final pa = a.priority;
+    final pb = b.priority;
+    if (pa != null && pb == null) return -1;
+    if (pa == null && pb != null) return 1;
+    if (pa != null && pb != null && pa != pb) return pb.compareTo(pa);
     return a.taskId.compareTo(b.taskId);
   });
 
@@ -816,9 +853,14 @@ ScheduleProposal repairSchedule(
     ),
   );
 
+  final enriched = changes
+      .map((block) => block.orderingReason == null
+          ? _enrich(block, demandById[block.taskId])
+          : block)
+      .toList();
   return ScheduleProposal(
-    blocks: changes,
-    changes: _buildChanges(changes),
+    blocks: enriched,
+    changes: _buildChanges(enriched, input),
     unplannedTasks: unplanned,
     notes: notes,
   );
@@ -855,12 +897,42 @@ List<ScheduleWindow> _subtractAll(
 ///
 /// 周期任务只能走 `upsert_daily_override`（写单日例外），
 /// 单次事项只能走 `schedule_one_time`。两者都不碰课程规则，也不改长期周期规则。
-List<ProposedScheduleChange> _buildChanges(List<ProposedBlock> blocks) {
+List<ProposedScheduleChange> _buildChanges(
+  List<ProposedBlock> blocks,
+  ScheduleInput input,
+) {
+  // 多日授权门（P1-1）：未授权时周期任务只落**最早一天**的单日例外，
+  // 其余日期仅作为展示块存在、没有可落库变更，避免把灵活任务永久钉死。
+  final earliestDayByTask = <String, String>{};
+  for (final block in blocks) {
+    if (block.taskKind != ScheduleTaskKind.recurring) continue;
+    final tag = _dayTag(block.startAt);
+    final current = earliestDayByTask[block.taskId];
+    if (current == null || tag.compareTo(current) < 0) {
+      earliestDayByTask[block.taskId] = tag;
+    }
+  }
+
+  // 当天已有安排 → 本次是改期（reschedule）；否则是首次指派（assign）。
+  final occupiedDays = <String>{
+    for (final placement in input.existingPlacements)
+      '${placement.taskId}#${_dayTag(placement.startAt)}',
+  };
+
   final changes = <ProposedScheduleChange>[];
   for (final block in blocks) {
     // 同一任务在不同日期各有一条变更时，changeId 必须区分，
     // 否则服务端无法定位被拒的那一条。
-    final changeId = 'chg-${block.taskId}-${_dayTag(block.startAt)}';
+    final dayTag = _dayTag(block.startAt);
+    if (!input.authorizeMultiDayOverrides &&
+        block.taskKind == ScheduleTaskKind.recurring &&
+        earliestDayByTask[block.taskId] != dayTag) {
+      continue;
+    }
+    final action = occupiedDays.contains('${block.taskId}#$dayTag')
+        ? 'reschedule'
+        : 'assign';
+    final changeId = 'chg-${block.taskId}-$dayTag';
     if (block.taskKind == ScheduleTaskKind.oneTime) {
       changes.add(
         ScheduleOneTimeChange(
@@ -883,6 +955,7 @@ List<ProposedScheduleChange> _buildChanges(List<ProposedBlock> blocks) {
         localDate: scheduleDayOnly(block.startAt),
         plannedStartMinute: startMinute,
         plannedEndMinute: endMinute,
+        action: action,
       ),
     );
   }

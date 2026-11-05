@@ -1049,7 +1049,8 @@ void main() {
       ) as UpsertDailyOverrideChange;
       expect(override.itemKind, ScheduleTaskKind.recurring);
       expect(override.itemId, 'recurring');
-      expect(override.action, 'reschedule');
+      // M0 2026-11-05 17:04Z P1-1：当天原本没有安排 → 这是首次指派，不是改期。
+      expect(override.action, 'assign');
       expect(override.localDate, _at(0, 0));
       expect(override.plannedStartMinute, 9 * 60);
       expect(override.plannedEndMinute, 9 * 60 + 30);
@@ -1816,7 +1817,10 @@ void main() {
         expect(allowedTypes, contains(json['type']), reason: json.toString());
         // Open Question 5 未定之前，最小权限只输出 reschedule。
         final action = json['action'];
-        if (action != null) expect(action, 'reschedule');
+        if (action != null) {
+          // P1-1 后 action 有两个合法值：首次指派 assign、改期 reschedule。
+          expect(UpsertDailyOverrideChange.allowedActions, contains(action));
+        }
       }
 
       // 「状态」判定项：纯函数不得产生终态，也不得自己构造服务端字段。
@@ -1932,6 +1936,7 @@ void main() {
       }
 
       // 展示块：§5.6 的九个字段，一个不多一个不少。
+      // M0 2026-11-05 17:04Z P1-2/P1-3：块新增排序依据与优先级状态两键。
       const expectedBlockKeys = <String>{
         'block_id',
         'task_id',
@@ -1942,6 +1947,8 @@ void main() {
         'persistable_as',
         'duration_source',
         'duration_seconds',
+        'ordering_reason',
+        'priority_state',
       };
       final blocks = json['blocks'] as List<dynamic>;
       expect(blocks, isNotEmpty);
@@ -2103,7 +2110,11 @@ void main() {
         // 不允许借用单日例外去改课程。
         expect({'recurring', 'one_time'}, contains(json['item_type']));
         expect(json['type'], 'upsert_daily_override');
-        expect(json['action'], 'reschedule');
+        // 无既有安排时为首次指派；只有当天已有安排才叫改期。
+        expect(
+          UpsertDailyOverrideChange.allowedActions,
+          contains(json['action']),
+        );
 
         final start = json['planned_start_minute'] as int;
         final end = json['planned_end_minute'] as int;
@@ -2527,6 +2538,184 @@ void main() {
         proposal.unplannedTasks.firstWhere((task) => task.taskId == 'ovd-1').reason.code,
         'UNSCHEDULABLE_OVERDUE',
       );
+    });
+  });
+
+  group('P1 语义与可解释性（M0 2026-11-05 17:04Z 集中修复包）', () {
+    ScheduleInput baseInput({
+      List<ScheduleTaskDemand> demands = const [],
+      List<SchedulePlacement> placements = const [],
+      bool authorize = false,
+      int horizonDays = 1,
+    }) =>
+        ScheduleInput(
+          now: _at(0, 8),
+          horizonStart: _at(0, 8),
+          horizonEnd: _at(horizonDays - 1, 22),
+          baseVersion: 'v1',
+          availability: [
+            for (var day = 0; day < horizonDays; day++) _window(day, 8, 18),
+          ],
+          demands: demands,
+          existingPlacements: placements,
+          authorizeMultiDayOverrides: authorize,
+        );
+
+    test('首次指派是 assign，不是 reschedule', () {
+      final proposal = generateSchedule(
+        baseInput(
+          demands: [
+            ScheduleTaskDemand(taskId: 't-new', title: '新任务', requiredMinutes: 30),
+          ],
+        ),
+      );
+
+      final change = proposal.changes.single as UpsertDailyOverrideChange;
+      expect(change.action, 'assign');
+      expect(change.localDate, _at(0, 0));
+    });
+
+    test('当天已有安排才算改期：reschedule', () {
+      final proposal = generateSchedule(
+        baseInput(
+          demands: [
+            ScheduleTaskDemand(taskId: 't-move', title: '要挪的任务', requiredMinutes: 30),
+          ],
+          placements: [
+            SchedulePlacement(
+              taskId: 't-move',
+              startAt: _at(0, 15),
+              endAt: _at(0, 15, 30),
+            ),
+          ],
+        ),
+      );
+
+      final change = proposal.changes.single as UpsertDailyOverrideChange;
+      expect(change.action, 'reschedule');
+    });
+
+    test('未授权多日覆盖时，周期任务只在最早一天生成单日例外', () {
+      final previous = ScheduleProposal(
+        blocks: [
+          ProposedBlock(
+            taskId: 't-multi',
+            title: '每日背单词',
+            startAt: _at(0, 10),
+            endAt: _at(0, 10, 30),
+          ),
+          ProposedBlock(
+            taskId: 't-multi',
+            title: '每日背单词',
+            startAt: _at(1, 10),
+            endAt: _at(1, 10, 30),
+          ),
+        ],
+      );
+      final input = baseInput(
+        horizonDays: 2,
+        demands: [
+          ScheduleTaskDemand(taskId: 't-multi', title: '每日背单词', requiredMinutes: 30),
+        ],
+      );
+
+      final proposal = repairSchedule(input, previous);
+
+      expect(proposal.blocks, hasLength(2), reason: '两块仍要展示出来');
+      expect(proposal.changes, hasLength(1), reason: '默认不批量钉死多日');
+      expect(
+        (proposal.changes.single as UpsertDailyOverrideChange).localDate,
+        _at(0, 0),
+      );
+    });
+
+    test('显式授权后，多日单日例外才全部生成', () {
+      final previous = ScheduleProposal(
+        blocks: [
+          ProposedBlock(
+            taskId: 't-multi2',
+            title: '每日背单词',
+            startAt: _at(0, 10),
+            endAt: _at(0, 10, 30),
+          ),
+          ProposedBlock(
+            taskId: 't-multi2',
+            title: '每日背单词',
+            startAt: _at(1, 10),
+            endAt: _at(1, 10, 30),
+          ),
+        ],
+      );
+      final input = baseInput(
+        horizonDays: 2,
+        authorize: true,
+        demands: [
+          ScheduleTaskDemand(taskId: 't-multi2', title: '每日背单词', requiredMinutes: 30),
+        ],
+      );
+
+      final proposal = repairSchedule(input, previous);
+
+      expect(proposal.blocks, hasLength(2));
+      expect(proposal.changes, hasLength(2));
+    });
+
+    test('未提供 priority：标 unknown，不推测成 0', () {
+      final proposal = generateSchedule(
+        baseInput(
+          demands: [
+            ScheduleTaskDemand(taskId: 't-unknown', title: '无优先级', requiredMinutes: 30),
+            ScheduleTaskDemand(
+              taskId: 't-known',
+              title: '有优先级',
+              requiredMinutes: 30,
+              priority: 5,
+            ),
+          ],
+        ),
+      );
+
+      final unknown = proposal.blocks.firstWhere((b) => b.taskId == 't-unknown');
+      final known = proposal.blocks.firstWhere((b) => b.taskId == 't-known');
+      expect(unknown.priorityState, 'unknown');
+      expect(unknown.orderingReason, 'stable_input_order');
+      expect(known.priorityState, 'provided');
+      expect(known.orderingReason, 'priority_order');
+      // 有优先级的先排（同截止条件下）
+      expect(known.startAt.isBefore(unknown.startAt), isTrue);
+    });
+
+    test('有截止的任务：ordering_reason 记为 deadline_first', () {
+      final proposal = generateSchedule(
+        baseInput(
+          demands: [
+            ScheduleTaskDemand(
+              taskId: 't-deadline',
+              title: '有截止',
+              requiredMinutes: 30,
+              deadline: ScheduleDeadline.exact(_at(0, 12)),
+            ),
+          ],
+        ),
+      );
+
+      expect(proposal.blocks.single.orderingReason, 'deadline_first');
+    });
+
+    test('单日例外不触碰 recurrence 语义：item_type 保持 recurring，且不产生规则类变更', () {
+      final proposal = generateSchedule(
+        baseInput(
+          demands: [
+            ScheduleTaskDemand(taskId: 't-rec', title: '周期任务', requiredMinutes: 30),
+          ],
+        ),
+      );
+
+      final types = proposal.changes.map((change) => change.type).toSet();
+      expect(types, {'upsert_daily_override'}, reason: '不得产生修改周期规则的变更');
+      final change = proposal.changes.single as UpsertDailyOverrideChange;
+      expect(change.itemKind, ScheduleTaskKind.recurring);
+      expect(change.type, 'upsert_daily_override');
     });
   });
 

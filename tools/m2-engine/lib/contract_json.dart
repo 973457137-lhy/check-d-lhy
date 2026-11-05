@@ -210,7 +210,10 @@ MappedInput scheduleInputFromJson(Map<String, dynamic> json) {
         earliestStartAt: item['available_from'] == null
             ? null
             : _instant(item['available_from'], '$field.available_from'),
-        priority: item.containsKey('priority') ? _int(item['priority'], '$field.priority') : 0,
+        // 未提供就是 null（unknown），不得默认成 0——M0 2026-11-05 17:04Z P1-3。
+        priority: item['priority'] == null
+            ? null
+            : _int(item['priority'], '$field.priority'),
         targetDurationSeconds: targetSeconds,
         remainingMinutesToday: remainingMinutes,
       ),
