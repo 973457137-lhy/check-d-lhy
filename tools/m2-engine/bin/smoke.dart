@@ -193,17 +193,34 @@ void main() async {
   );
 
   stdout.writeln('== 2c. M3 复验三点（F-1/F-2/F-3）==');
-  // F-3：显式 null 必须与缺键等价（Python json.dumps({"availability": None}) 就会带真 null）
+  // F-3（M0 fail-closed 令）：不允许靠省略 availability 表达「未知」
+  final missingInput = Map<String, dynamic>.from(_fixture('normal.json')['input'] as Map);
+  missingInput.remove('availability');
+  final missingRes = handleRequest('POST', '/generate_schedule', {'input': missingInput});
+  _check(
+    'availability 缺失: 400 且 field 指向该字段（fail-closed）',
+    missingRes.status == 400 && '${(missingRes.body['error'] as Map?)?['field']}' == 'input.availability',
+    '${missingRes.status} ${missingRes.body['error']}',
+  );
+
+  // F-3：显式 null 必须能收（Python json.dumps({"availability": None}) 就带真 null），
+  // 且必须与 [] 区分：null 推导出块，[] 一块不出。
   final nullInput = Map<String, dynamic>.from(_fixture('normal.json')['input'] as Map);
   nullInput['availability'] = null;
   final nullRes = handleRequest('POST', '/generate_schedule', {'input': nullInput});
   _check('availability=null: 200（不当作格式错误）', nullRes.status == 200, '${nullRes.status} ${nullRes.body['error']}');
   _check(
-    'availability=null: 与缺键同行为（2 块、state=null）',
+    'availability=null: 与缺键不同，按 preferences 推导出块',
     nullRes.status == 200 &&
         ((nullRes.body['proposal'] as Map)['blocks'] as List).length == normalBlocks.length &&
         nullRes.body['meta']['availability_state'] == 'null',
     '${nullRes.status == 200 ? (nullRes.body['proposal'] as Map)['blocks'] : null}',
+  );
+  _check(
+    'availability=null: 响应带 warnings 提醒可改为 []',
+    nullRes.status == 200 &&
+        ((nullRes.body['warnings'] as List?) ?? const []).any((w) => '$w'.contains('已确认今天全忙')),
+    '${nullRes.body['warnings']}',
   );
 
   // F-2：max_shift_minutes 非法输入必须 400，不得静默当没传

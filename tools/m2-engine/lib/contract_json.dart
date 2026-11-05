@@ -249,13 +249,22 @@ MappedInput scheduleInputFromJson(Map<String, dynamic> json) {
     );
   }
 
-  // availability 三态必须原样保留：
-  // - 缺键 或 显式 null = 未提供（允许按 preferences 推导）；
-  // - 空数组 = 显式「没有可用时间」；
-  // - 非空数组 = 只用显式窗口。
+  // availability 三态必须原样保留，且**不允许靠省略来表达"未知"**：
+  // - 缺键            → 400（fail-closed）：调用方必须显式表态，不能把"不知道"塞给引擎猜；
+  // - 显式 null       → 未提供，允许按 preferences 推导（契约 §5.2 / 19-C2 a，引擎语义）；
+  // - 空数组          → 显式「没有可用时间」，不得回退推导（19-C2 b）；
+  // - 非空数组        → 只用显式窗口（19-C2 c）。
   //
-  // 显式 null 必须与缺键等价：Python 侧 json.dumps({"availability": None}) 会带一个
-  // 真 null，若在这里按「存在即校验」处理会抛 400，等于把「未提供」判成「格式错误」。
+  // 显式 null 与缺键在此层被**故意区别对待**：前者是调用方的明确表态，后者是漏传。
+  // Python 侧 json.dumps({"availability": None}) 会带真 null，故 null 必须接受。
+  if (!json.containsKey('availability')) {
+    _fail(
+      'input.availability',
+      '必填：必须显式声明可用时间。[] = 已确认今天没有任何可用时间；'
+          'null = 调用方未提供（引擎按 preferences 推导）；数组 = 显式可用窗口。'
+          '不允许省略字段——省略无法与"全忙"区分。',
+    );
+  }
   List<ScheduleWindow>? availability;
   if (json['availability'] != null) {
     final list = _array(json['availability'], 'input.availability');
@@ -270,6 +279,13 @@ MappedInput scheduleInputFromJson(Map<String, dynamic> json) {
         ),
       );
     }
+  }
+
+  if (json['availability'] == null) {
+    warnings.add(
+      'input.availability 为 null：引擎按 preferences 推导可用时间。'
+      '若服务端已确认今天全忙，必须传 []（显式全忙）；null 只表示「调用方未提供」。',
+    );
   }
 
   final timezone = json.containsKey('timezone') ? _string(json['timezone'], 'input.timezone') : 'Asia/Shanghai';

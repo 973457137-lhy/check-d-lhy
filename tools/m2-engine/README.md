@@ -52,7 +52,7 @@ dart run tools/m2-engine/bin/smoke.dart
 | `base_version` | ✅ | 原样带回，不生成、不校验 |
 | `timezone` | ⬜ | 固定 `Asia/Shanghai`；传别的值会进 `warnings`（引擎不做时区转换） |
 | `preferences` | ⬜ | `day_start_minute` / `day_end_minute` / `minimum_block_minutes` |
-| `availability` | ⬜ | **三态**：缺键 = null（按 preferences 推导）；`[]` = 显式没有可用时间；非空 = 只用显式窗口 |
+| `availability` | ✅ | **必填且三态**：`[]` = 已确认今天全忙（不推导）；`null` = 调用方未提供（按 preferences 推导，响应带 `warnings`）；非空数组 = 只用显式窗口。**省略该字段直接 400**（省略无法与「全忙」区分） |
 | `fixed_blocks` | ⬜ | 课程/外部固定事件，`owner_type` ∈ `course` / `external_fixed_event` |
 | `demands` | ⬜ | 任务需求；`task_kind` ∈ `recurring` / `one_time`；`deadline` 为 `{kind:date_only,date}` 或 `{kind:exact,at}` |
 | `existing_placements` | ⬜ | 上一版已存在的柔性安排 |
