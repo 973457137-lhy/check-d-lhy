@@ -407,3 +407,83 @@ return 'yyyy-MM-ddTHH:mm:ss+08:00';   // 固定偏移，字段取自上海墙上
 - 原 51 条基线**一条未删、未改**；新增 5 条编号 T-1～T-5。
 - `lib/` 改动仅一处新增函数 + 三处序列化调用，**未改任何调度算法**。
 - G18 的 `related_task_ids` 归属**仍未裁定**（M0 明确本次授权不代表对归属作决定）。
+
+---
+
+## 十、卷 2（A1 全本）对照与两项回执（2026-11-05 15:20，M1 打包件到达后）
+
+> 触发：M1《CheckD｜M1（A）全部成果打包》（2026-11-05 15:08 +08，library node `6yxIdfFEMFwcG3B5mSAelG`，v1）。该包 §0.1 明确「M2 只需卷 2（A1 全本）作接口边界基准」，故本节点只对 A1 §9 与卷 5 的 R1/R2/R3、D3 做增量核对，不通读全包。
+
+### 10.1 A1 §9.1 十二项：M2 侧现状复核（只列需动作的三项）
+
+A1 §9.1 判定为「一致」的 9 项，M2 现状无变化，不再重复。另 3 项标「需补措辞 / 需修正」，逐项核对：
+
+| # | A1 要求 | M2 现状（源码核实） | 是否已满足 |
+|---|---|---|---|
+| 2 | `baseVersion` 是服务端生成的不透明值，M2 只透传、不比较、不解析 | `schedule_engine.dart` 全文 **`baseVersion` 出现 0 次**；仅在 `ScheduleInput` 字段与注释里存在。0 次 = 既不比较也不解析，纯透传 | ✅ 已满足（比"补措辞"更强：代码层面就不读） |
+| 7 | `requiredMinutes` / `remainingMinutesToday` 必须是服务端可信快照 | contract 两处字段注释已明写「只接受服务端可信快照，不得来自 LLM 估算」 | ✅ 已满足 |
+| 11 | 字段名 `notes` 应为 `explanations` | `ScheduleProposal.toJson()` 输出的键已是 `explanations`；`notes` 只是 Dart 内部字段名 | ✅ **A1 该条为误报**，2026-11-03 已回函澄清，无需改码 |
+
+**第 8 项另有一个必须报告的实事（A1 未指出，本轮新查）**：
+
+> `existingPlacements` 在 `schedule_engine.dart` 中出现 **0 次** —— 字段声明存在（contract `SchedulePlacement`），但引擎**从不读取**。repair 走的是 `previous: ScheduleProposal` 参数，不是这个字段。
+
+影响有两面，都属良性但需明示：
+
+1. **不构成违约**：契约未要求 M2 必须消费它；§9.3 责任矩阵也未把它列进 M2 职责。
+2. **`input_digest` 语义需服务端注意**：若服务端按 A1 §9.1 #8 把它计入 digest，则会出现「digest 不同但 M2 输出完全相同」的情形——**方向是保守的**（不会产生碰撞，只会让幂等判定偏严）。若希望 digest 精确反映"影响输出的输入"，则不应把它计入。
+
+**建议**：`existingPlacements` 标为「保留字段、当前零消费」，由 M0 决定 ① 保留（接入 profile 时再用）或 ② 从 DTO 删除。M2 不自行删除已在契约侧被引用的字段。
+
+### 10.2 回执 R3：`maxShiftMinutes` —— 已消费，但落点**不是** `ScheduleInput`
+
+A1 卷 5 项 8 写「R3 `maxShiftMinutes`：需 M2 确认是否消费；若 M2 消费，写进 `ScheduleInput`；否则服务端预投影」。
+
+**M2 确认：已消费。但落点是函数可选命名参数，不是 `ScheduleInput` 字段。**
+
+| 项 | 实际值 |
+|---|---|
+| 签名 | `ScheduleProposal repairSchedule(ScheduleInput input, ScheduleProposal previous, {int? maxShiftMinutes})`（engine L560–564） |
+| Dart 默认 | `null` = 无边界（不施加位移上限） |
+| 服务层约定 | 显式传 `120`（M0 2026-11-03 裁定） |
+| 生效位置 | `_placeNearest`（engine L278）内：`delta > maxShiftMinutes` 的候选被排除，全部被排除时退最早可用 |
+| 覆盖用例 | 兜底（test L757）、边界不误杀（L809）、不传参即无边界（L856） |
+
+**为什么不写进 `ScheduleInput`**（三条，供 A1 采纳）：
+
+1. `ScheduleInput` 是**快照的映射**，其字段应全部来源于服务端可信快照；而 `maxShiftMinutes` 是**策略参数**，不是用户数据，混进快照会让 `input_digest` 覆盖一个非数据项。
+2. 它是**进程内调用参数**，不跨网络、不进 Proposal、不进任何响应，写进 DTO 等于为一个纯内部旋钮新增契约面。
+3. 现有实现已验证可用：不传 = 无边界（第 856 条用例锁死），服务层传 120 即生效，**不需要 A1 的"服务端预投影"**——预投影位移上限会丢失"就近"语义（把位移约束前移到输入侧无法表达"相对原位置的位移"）。
+
+**建议措辞**：`R3 = M2 已消费（repairSchedule 可选参数，默认 null）；服务层显式传 120；不写入 ScheduleInput，不需服务端预投影。`
+
+### 10.3 回执 D3：`availability` —— A1 提的「toJson 归一」风险在 M2 不存在，但语义缺口是真的
+
+A1 卷 5 项 5 的风险描述：「M2 侧若在 `toJson()` 里把 `null` 归一成 `[]`（或反之），这个区分在传输层就丢了」。
+
+**事实更正**：`availability` 是**纯输入字段，从不被序列化**。`grep availability` 在两端 `toJson()` 中命中 **0 次**。因此「toJson 归一」这一风险在 M2 侧**不存在**。
+
+**但语义缺口是真的**，且方向与 A1 假设相反：
+
+| 现状 | 代码事实 |
+|---|---|
+| 类型 | `final List<ScheduleWindow> availability`（contract L367），**非空**，默认 `const []`（L341） |
+| 空数组行为 | `_effectiveAvailability`（engine L63）：`isNotEmpty` 才用，否则**按 preferences 逐日推导** |
+| 即 | 当前 `[]` = **「未指定，按偏好推导」**，不是「显式无时间」 |
+| `null` | **无法表达**（非空类型） |
+
+所以 A1 建议的 `null`=未指定 / `[]`=显式无时间，在 M2 当前 DTO 上**无处落地**——`[]` 已被"未指定"占用。
+
+**若 M0 裁定采纳 A1 语义，M2 的变更面（已实测，精确到用例）**：
+
+| 改动点 | 内容 | 影响现有用例 |
+|---|---|---|
+| `ScheduleInput.availability` | `List<ScheduleWindow>` → `List<ScheduleWindow>?`，默认 `null` | **0 条**（现有 56 条用例中，显式传 `availability: []` 的有 **0 条**；48 处 `ScheduleInput(` 构造均传实窗或不传） |
+| `_effectiveAvailability`（engine L63） | 加一分支：`null` → 按偏好推导；`[]` → 返回空表 → 全部任务进 unplanned 且 `reason_code = NO_AVAILABILITY` | **0 条**（`未显式给出可用窗口时用 preferences 逐日推导`（test L1068）传的是默认值，改后为 `null`，行为不变） |
+| 新增用例 | ① `null` 按偏好推导（沿用既有）；② `[]` → 全部 unplanned + `NO_AVAILABILITY`；③ `toJson()` 不输出 `availability`（守卫，防将来误加） | +2～3 条 |
+
+**结论**：这是**小改动、向后兼容、零既有用例破坏**（因无人显式传 `[]`），但**语义变更须 M0 先裁**，M2 不自行改。
+
+### 10.4 引用口径
+
+本节点所有行号均对 `fix/m2-p0-iso-offset @ e607e67` 的 `schedule_contract.dart` / `schedule_engine.dart` / `test/agent_scheduler_test.dart`。按 M1 §0.4 第一条：引用时须带「行号 + 本版字节/行数 + 指纹前缀」，故本节行号**只在与该 commit 同时引用时有效**。
