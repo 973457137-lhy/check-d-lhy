@@ -193,3 +193,37 @@ e607e6744a0e0bd602ac2048c76296e17cb5f191
 
 - 本文件在 2026-11-05 16:25 起含 §4.3 证据等级、§5.3 P0 定位、§八 附录；此前版本的元信息一律作废。
 - 未改任何代码；本轮只补文档。
+
+---
+
+## 十、19-C2 的验收口径（M0 2026-11-05 09:27:04Z 最终裁定）
+
+M0 在 P2 / Fixture-C 的最终验收里，对 C2 判据给出了一条**关键定性**：
+
+> 19-C2 三态：Mock 侧记为 **UNVERIFIABLE / 范围外**，不是 FAIL，也不阻塞 P2 PASS。
+> **三态语义的验收对象是 M2 引擎及未来服务端**，不应在 Mock 侧伪造通过。
+
+### 10.1 这条定性的直接含义
+
+| 层 | 19-C2 状态 | 原因 |
+|---|---|---|
+| Mock（`tool_server.py`） | **UNVERIFIABLE / 范围外** | Mock 当前**不读取任务级 `availability`**；没有消费方，就没有可观测行为 |
+| **M2 引擎（本文件对象）** | **可验收**——`T-6` / `T-7` 即判据载体 | 三态分支在 `_effectiveAvailability`（engine L63），行为可直接断言 |
+| 未来服务端 | 待建 | 服务端才是 `availability` 的**组装方**，负责把快照映射成三态 |
+
+**结论：19-C2 不是「无法验证」，而是「验证对象不在 mock」。** 把 mock 侧的 UNVERIFIABLE 误读成整体不可验收，会让这条判据长期悬空。
+
+### 10.2 可执行的验收路径（供 M3 独立复核时使用）
+
+M2 侧不需要新增任何东西，现有交付即可支撑：
+
+1. 从我的 fork 分支 `feat/m2-availability-tri-state` 取三个文件（`schedule_contract.dart`、`schedule_engine.dart`、`agent_scheduler_test.dart`）；
+2. 按 `docs/scheduler/值守规程.md` §六 的隔离方式跑（`package:test` + `dart test`），或直接 `flutter test`；
+3. 预期结果：**58/58 通过**，其中 `T-6` 断言三态分叉（`null` 推导 / `[]` 不推导且 `NO_AVAILABILITY` / 非空只用显式）、`T-7` 断言 `availability` 不进 Proposal 序列化；
+4. 证据等级按 M0 口径记：**作者本机双通道实测，非 CI**；若 M3 独立复跑，则升为「第三方本机实测」。
+
+### 10.3 不得越界的表述
+
+- 不得把 19-C2 写成「已通过」——它只在 M2 域内通过，服务端组装层尚未存在。
+- 不得把 mock 的 UNVERIFIABLE 改写成 FAIL（方向相反，且会误导排期）。
+- 与 P2 PASS 无耦合：P2 的 PASS 不含 C2，反之亦然。
