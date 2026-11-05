@@ -118,6 +118,28 @@ String _isoDate(DateTime value) =>
     '${value.month.toString().padLeft(2, '0')}-'
     '${value.day.toString().padLeft(2, '0')}';
 
+/// 把一个**真实时刻（instant）**转换到固定业务时区 `Asia/Shanghai` 后序列化。
+///
+/// 契约 §3 明文：精确时间必须是 RFC 3339 / ISO 8601 字符串并带明确偏移，
+/// **禁止无偏移时间**。Dart 的 `DateTime.toIso8601String()` 只能产出
+/// 「无偏移的本地时间」或「带 Z 的 UTC」两种形态，**无法直接输出 `+08:00`**，
+/// 因此这里手写格式化。
+///
+/// **语义前提**：入参是 instant，即时间轴上的一个点，而不是「上海墙上时间的字面值」。
+/// 所以先 `toUtc()` 归一到 UTC，再加 8 小时得到上海墙上时间，末尾固定拼 `+08:00`。
+///
+/// 反例（调用方语义错误，不是本函数错误）：在非 `+08:00` 机器上用
+/// `DateTime(2026, 11, 5, 9, 40)` 表达"上海 9:40"——它实际表示的是该机器本地
+/// 9:40 对应的那一刻，转换后可能得到 `17:40+08:00`。要表达上海时刻，应使用
+/// `DateTime.parse('2026-11-05T09:40:00+08:00')` 或 `DateTime.utc(...)`。
+String _isoShanghaiInstant(DateTime value) {
+  final shanghai = value.toUtc().add(const Duration(hours: 8));
+  String two(int v) => v.toString().padLeft(2, '0');
+  return '${shanghai.year.toString().padLeft(4, '0')}-${two(shanghai.month)}-'
+      '${two(shanghai.day)}T${two(shanghai.hour)}:${two(shanghai.minute)}:'
+      '${two(shanghai.second)}+08:00';
+}
+
 /// 任务没能被排进去的机器可读原因。
 ///
 /// C 的验收表和 A 的差异文案都依赖这个枚举，不能退化成一句中文描述。
@@ -407,8 +429,8 @@ class ProposedBlock {
     'block_id': blockId,
     'task_id': taskId,
     'task_kind': taskKind.code,
-    'start_at': startAt.toIso8601String(),
-    'end_at': endAt.toIso8601String(),
+    'start_at': _isoShanghaiInstant(startAt),
+    'end_at': _isoShanghaiInstant(endAt),
     'source': source,
     'persistable_as': persistableAs,
     'duration_source': durationSource,
@@ -453,7 +475,7 @@ class ScheduleOneTimeChange extends ProposedScheduleChange {
     'type': type,
     'task_id': taskId,
     'planned_date': _isoDate(plannedDate),
-    if (scheduledAt != null) 'scheduled_at': scheduledAt!.toIso8601String(),
+    if (scheduledAt != null) 'scheduled_at': _isoShanghaiInstant(scheduledAt!),
   };
 }
 

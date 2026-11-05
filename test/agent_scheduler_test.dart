@@ -2166,6 +2166,105 @@ void main() {
     });
   });
 
+  // M0 2026-11-05 裁定授权的 P0-1 修复：契约 §3 禁止无偏移时间。
+  // Dart 的 toIso8601String() 只能输出「无后缀」或「带 Z」，无法产出 +08:00。
+  group('P0 时间偏移（契约 §3）', () {
+    test('blocks 的 start_at / end_at 必须带 +08:00 偏移，且时刻与块对象一致', () {
+      final input = ScheduleInput(
+        now: _at(0, 7),
+        horizonStart: _at(0, 8),
+        horizonEnd: _at(0, 18),
+        baseVersion: 'v1',
+        availability: [_window(0, 8, 18)],
+        demands: [
+          ScheduleTaskDemand(
+            taskId: 't1',
+            title: '任务',
+            requiredMinutes: 60,
+          ),
+        ],
+      );
+
+      final proposal = generateSchedule(input);
+      expect(proposal.blocks, hasLength(1));
+
+      final block = proposal.toJson()['blocks'][0] as Map<String, dynamic>;
+      expect(block['start_at'], endsWith('+08:00'));
+      expect(block['end_at'], endsWith('+08:00'));
+      // 必须与块对象上的 DateTime 语义一致，不能只是"看起来带偏移"。
+      expect(block['start_at'], '2026-11-02T08:00:00+08:00');
+      expect(block['end_at'], '2026-11-02T09:00:00+08:00');
+      // 反向守卫：绝不能是无偏移形态（契约 §3 明令禁止）。
+      expect(block['start_at'], isNot(matches(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?$')));
+    });
+
+    test('changes 的 scheduled_at 必须带 +08:00 偏移', () {
+      final input = ScheduleInput(
+        now: _at(0, 7),
+        horizonStart: _at(0, 8),
+        horizonEnd: _at(0, 18),
+        baseVersion: 'v1',
+        availability: [_window(0, 8, 18)],
+        demands: [
+          ScheduleTaskDemand(
+            taskId: 't1',
+            title: '任务',
+            requiredMinutes: 60,
+            taskKind: ScheduleTaskKind.oneTime,
+          ),
+        ],
+      );
+
+      final proposal = generateSchedule(input);
+      final change = proposal.toJson()['changes'][0] as Map<String, dynamic>;
+      expect(change['type'], 'schedule_one_time');
+      expect(change['scheduled_at'], isNotNull);
+      expect(change['scheduled_at'], endsWith('+08:00'));
+      expect(change['scheduled_at'], '2026-11-02T08:00:00+08:00');
+    });
+
+    test('UTC instant 输入：转成上海时区后带 +08:00，不把 UTC 时刻误标为 +08:00', () {
+      // 2026-11-02T00:00:00Z 就是上海 08:00。若实现只是"末尾拼 +08:00"，
+      // 会错误输出 00:00:00+08:00（差 8 小时）。
+      final utcStart = DateTime.utc(2026, 11, 2, 0, 0);
+      final block = ProposedBlock(
+        taskId: 't1',
+        title: '任务',
+        startAt: utcStart,
+        endAt: utcStart.add(const Duration(hours: 1)),
+      );
+
+      final json = block.toJson();
+      expect(json['start_at'], '2026-11-02T08:00:00+08:00');
+      expect(json['end_at'], '2026-11-02T09:00:00+08:00');
+      // 双重偏移守卫：不能出现 +16:00 之类的二次转换。
+      expect(json['start_at'], isNot(contains('+16:00')));
+    });
+  });
+
+  // 契约 §5.7：explanations 每项可带 related_task_ids。
+  group('related_task_ids 专项', () {
+    test('taskId 非空时输出单元素数组，且元素等于 taskId', () {
+      final note = ScheduleNote(
+        code: 'SCHEDULED',
+        message: '已排入。',
+        taskId: 'task-42',
+      );
+      final json = note.toJson();
+
+      expect(json['related_task_ids'], isA<List<dynamic>>());
+      expect(json['related_task_ids'], <String>['task-42']);
+    });
+
+    test('taskId 为空时整个键不出现（不得输出 [] 或 [null]）', () {
+      final note = ScheduleNote(code: 'REPAIR_SUMMARY', message: '共移动 1 处。');
+      final json = note.toJson();
+
+      expect(json.containsKey('related_task_ids'), isFalse);
+      expect(json.keys.toSet(), <String>{'code', 'message'});
+    });
+  });
+
   group('模块边界', () {
     test('调度模块不得访问数据库或任何应用层代码', () {
       for (final path in [
