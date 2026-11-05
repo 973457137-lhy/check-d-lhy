@@ -18,6 +18,30 @@ String stripComments(String source) => source
     })
     .join('\n');
 
+/// 在 [root] 下按 basename 递归查找候选源码文件（路径排序后返回；根不存在返回空）。
+///
+/// 用 basename 而不是硬编码相对路径，是为了让宿主工程
+/// （`lib/features/agent_scheduler/domain/`）与隔离验证工程
+/// （源码拷到 `lib/` 顶层）都能定位到同一份被测源码。
+List<String> _findSourceCandidates(String root, String basename) {
+  final dir = Directory(root);
+  if (!dir.existsSync()) return const <String>[];
+  final hits = <String>[];
+  for (final entity in dir.listSync(recursive: true, followLinks: false)) {
+    if (entity is! File) continue;
+    final segments = entity.uri.pathSegments;
+    if (segments.isNotEmpty && segments.last == basename) {
+      hits.add(entity.path);
+    }
+  }
+  hits.sort();
+  return hits;
+}
+
+/// 归一换行后再比较：autocrlf 造成的 CRLF/LF 差异不是内容差异，
+/// 不该让守卫误报「两份源码不一致」。
+String _normalizeNewlines(String source) => source.replaceAll('\r\n', '\n');
+
 DateTime _at(int dayOffset, int hour, [int minute = 0]) =>
     DateTime(_monday.year, _monday.month, _monday.day + dayOffset, hour, minute);
 
@@ -2340,19 +2364,59 @@ void main() {
   });
 
   group('模块边界', () {
+    // 被测源码按 basename 在 `lib/` 下递归定位，不写死相对路径：
+    // 否则隔离验证工程（源码拷到 `lib/` 顶层）必红，只能靠补第二份副本凑绿，
+    // 而副本一旦陈旧，守卫扫的字节就不是被执行的字节 —— 假通过从运行期搬到守卫期。
+    const searchRoot = 'lib';
+    const guardedBasenames = <String>[
+      'schedule_contract.dart',
+      'schedule_engine.dart',
+    ];
+
     test('调度模块不得访问数据库或任何应用层代码', () {
-      for (final path in [
-        'lib/features/agent_scheduler/domain/schedule_contract.dart',
-        'lib/features/agent_scheduler/domain/schedule_engine.dart',
-      ]) {
-        // 只扫描代码：本模块的文档注释里本就会出现这些名字（用于说明"不得依赖"），
-        // 若连注释一起匹配，守卫会被自己绊倒。
-        final code = stripComments(File(path).readAsStringSync());
-        expect(code, isNot(contains('package:drift')), reason: path);
-        expect(code, isNot(contains('package:supabase')), reason: path);
-        expect(code, isNot(contains('task_repository')), reason: path);
-        expect(code, isNot(contains('app_database')), reason: path);
-        expect(code, isNot(contains('DateTime.now()')), reason: path);
+      for (final basename in guardedBasenames) {
+        final candidates = _findSourceCandidates(searchRoot, basename);
+
+        if (candidates.isEmpty) {
+          // 搜索根都不存在 = 环境无法提供被测源码：标 UNVERIFIABLE 并写清搜索根，
+          // 绝不静默折算成通过（报告口径只能是「N passed + 1 skipped」）。
+          if (!Directory(searchRoot).existsSync()) {
+            markTestSkipped(
+              'UNVERIFIABLE：搜索根 `$searchRoot/` 不存在'
+              '（当前工作目录 ${Directory.current.path}），无法定位 `$basename`；'
+              '本条不计入通过。',
+            );
+            return;
+          }
+          // 根在、文件不在 = 源码缺失，明确失败，不用 skip 掩盖。
+          fail('在 `$searchRoot/` 下递归查找 `$basename` 命中 0 个候选：被测源码缺失，守卫不空转通过。');
+        }
+
+        // 多候选：逐份核对。内容不一致直接失败，不允许任取其一（否则漏洞原样开回来）。
+        final normalized = <String, String>{
+          for (final path in candidates)
+            path: _normalizeNewlines(File(path).readAsStringSync()),
+        };
+        if (normalized.values.toSet().length > 1) {
+          final detail = normalized.entries
+              .map((e) => '  - ${e.key}：${utf8.encode(e.value).length} B（LF 归一后）')
+              .join('\n');
+          fail(
+            '`$basename` 在 `$searchRoot/` 下命中 ${candidates.length} 个候选且内容不一致：\n'
+            '$detail\n必须只保留一份被测源码；守卫拒绝在候选之间任取其一。',
+          );
+        }
+
+        for (final path in candidates) {
+          // 只扫描代码：本模块的文档注释里本就会出现这些名字（用于说明"不得依赖"），
+          // 若连注释一起匹配，守卫会被自己绊倒。
+          final code = stripComments(normalized[path]!);
+          expect(code, isNot(contains('package:drift')), reason: path);
+          expect(code, isNot(contains('package:supabase')), reason: path);
+          expect(code, isNot(contains('task_repository')), reason: path);
+          expect(code, isNot(contains('app_database')), reason: path);
+          expect(code, isNot(contains('DateTime.now()')), reason: path);
+        }
       }
     });
   });
