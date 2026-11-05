@@ -185,3 +185,63 @@ M0 2026-11-05 14:34:14Z 裁定要求 fail-closed。落地方式如下（**与契
 报本服务坐标必须给**两件**：服务代码四文件 blob + 分支现行 head。
 只给 head 会在两次发信之间过期（我 21:10 报 `400b5e2`，21:37 再取已是 `93415fff`）。
 
+---
+
+## 十二、未安排原因码与 action 语义（P0/P1 修复后，给 M1 做映射用）
+
+### 12.1 六个 `reason_code`（前四个是历史码，后两个是 M0 2026-11-05 17:04Z 新增）
+
+| code | 触发条件 | `basis` 里写什么 | 服务端建议呈现 |
+|---|---|---|---|
+| `UNSCHEDULABLE_OVERDUE` | `deadline.latestEndAt < input.now`，即截止早于调度基准时刻 | 两个时刻：`deadline=… 早于 now=…` | 直说「已逾期，无法再排」；给「改截止 / 标记完成」两个动作 |
+| `INSUFFICIENT_TIME_BEFORE_DEADLINE` | 截止未过，但截止前所有空闲分钟数 < 所需 | `截止 … 之前可用 N 分钟，需要 M 分钟` | 说清是**截止**掐死的，不是整体没空 |
+| `WINDOW_INSUFFICIENT` | 无截止限制，但整体空闲不够 | 空（或调用方补） | 「今天排不下」，建议拆分或换天 |
+| `OVERLAPS_FIXED` | 可用时段被课程/会议占满 | 空 | 指向日历冲突，不是任务本身问题 |
+| `NO_AVAILABILITY` | `availability=[]`（显式全忙） | 空 | 提示用户先设可用时段 |
+| `PAST_DEADLINE` | **历史码，保留兼容**；新输出不再使用 | 空 | 若收到，按 `UNSCHEDULABLE_OVERDUE` 处理即可 |
+
+每条 unplanned 的 JSON 形状（M0 P0-3 后）：
+
+```json
+{
+  "task_id": "t_x",
+  "remaining_minutes": 90,
+  "reason_code": "INSUFFICIENT_TIME_BEFORE_DEADLINE",
+  "reason_message": "截止时间前的可用时间不足 90 分钟。",
+  "message": "…同上，v1 兼容别名…",
+  "basis": "截止 2026-11-05T22:00+08:00 之前可用 60 分钟，需要 90 分钟",
+  "suggested_actions": ["缩短本次目标时长，或把它拆成两次较短安排", "把截止时间往后延，腾出足够连续时间"]
+}
+```
+
+> `message` 与 `reason_message` 同值：前者是契约 §5.7 的既有键，后者是 M0 P0-3 的规范名。
+> M1 二选一都能读，但**不要两个都往下游透传**，否则同一条信息会出现两次。
+
+### 12.2 `changes[].action` 只有两个值
+
+| action | 含义 | 判定方式 |
+|---|---|---|
+| `assign` | 当天原本**没有**该任务的安排，本次是首次指派 | `existing_placements` 里没有 (task, 当天) |
+| `reschedule` | 当天**已有**安排，本次是改期 | `existing_placements` 里有 (task, 当天) |
+
+**M1 必须区分**：`assign` 走「新建单日例外」，`reschedule` 走「更新已有例外」。
+把两者都当更新，会得到一个字段全空的新记录；都当新建，会产生重复例外。
+若你收到的 `existing_override_id` 非空但 action=`assign`，那是我或你的映射有 bug，直接报我。
+
+### 12.3 跨天块没有对应 change 是**设计意图**，不是遗漏
+
+未授权（`authorize_multi_day_overrides` 缺省/false）时：
+`blocks` 可以跨多天展示，`changes` 只覆盖**最早一天**。
+原因：不给「一次生成就把灵活任务永久钉死在每天同一时刻」开无授权的口子。
+
+服务端应对：
+- **readback 以 `changes` 为准**，`blocks` 只用于展示；
+- 若看到「有块无单」，正确解释是「其余日期未获授权落库」，不是写入失败；
+- 需要全量落库时，调用方显式传 `authorize_multi_day_overrides: true`，并在 UI 上取得用户明确同意。
+
+### 12.4 `priority` 三态
+
+`priority` 缺失或 `null` → 该块输出 `priority_state: "unknown"`，`ordering_reason` 退化为
+`stable_input_order`。**不要把它当 0 处理**：0 是一个合法优先级，unknown 是「服务端没给」。
+
+
