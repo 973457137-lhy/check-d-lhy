@@ -276,7 +276,15 @@ List<ChangeView> _changeViewsFromJson(Object? raw) {
         '必须同时带 task_id（或 item_id）与 change_id',
       );
     }
-    result.add(ChangeView(taskId: taskId, changeId: changeId));
+    // 日期用于判「同一任务能否有多条变更」：单次事项 planned_date，单日例外 local_date。
+    final rawDate = item['local_date'] ?? item['planned_date'];
+    result.add(
+      ChangeView(
+        taskId: taskId,
+        changeId: changeId,
+        plannedDate: rawDate == null ? null : DateTime.tryParse('$rawDate'),
+      ),
+    );
   }
   return result;
 }

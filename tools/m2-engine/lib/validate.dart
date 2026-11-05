@@ -60,10 +60,21 @@ class BlockView {
 }
 
 class ChangeView {
-  const ChangeView({required this.taskId, required this.changeId});
+  const ChangeView({
+    required this.taskId,
+    required this.changeId,
+    this.plannedDate,
+  });
 
   final String taskId;
   final String changeId;
+
+  /// 这条变更作用在哪一天（仅日期，时间部分无意义）。
+  ///
+  /// 契约 v1 两个子类字段名不同：单次事项用 `planned_date`，单日例外用 `local_date`。
+  /// 判「同一任务能否有多条变更」必须按**日期**而不是按任务：
+  /// 周期任务跨多日各一条是合法的（P1-1 授权后即如此），同日两条才是重复。
+  final DateTime? plannedDate;
 }
 
 /// 码的稳定输出顺序（M0 要求 `FIXED_EVENT_CONFLICT` 先于 `BLOCK_OVERLAP`）。
@@ -92,7 +103,13 @@ List<Violation> validateProposal(ScheduleInput input, ScheduleProposal proposal)
       )
       .toList();
   final changes = proposal.changes
-      .map((change) => ChangeView(taskId: taskIdOfChange(change), changeId: change.changeId))
+      .map(
+        (change) => ChangeView(
+          taskId: taskIdOfChange(change),
+          changeId: change.changeId,
+          plannedDate: dateOfChange(change) == null ? null : scheduleDayOnly(dateOfChange(change)!),
+        ),
+      )
       .toList();
   return validateViews(input, blocks, changes);
 }
@@ -105,6 +122,13 @@ String taskIdOfChange(ProposedScheduleChange change) {
   if (change is ScheduleOneTimeChange) return change.taskId;
   if (change is UpsertDailyOverrideChange) return change.itemId;
   return change.changeId;
+}
+
+/// 取一条变更作用的本地日期（未知子类返回 null，退化为按任务判重）。
+DateTime? dateOfChange(ProposedScheduleChange change) {
+  if (change is ScheduleOneTimeChange) return change.plannedDate;
+  if (change is UpsertDailyOverrideChange) return change.localDate;
+  return null;
 }
 
 /// 核心校验：与来源无关，只看视图。
@@ -211,24 +235,51 @@ List<Violation> validateViews(
     );
   }
 
-  // 6) 单次事项同一提案最多一条变更
-  final perTaskChange = <String, List<String>>{};
+  // 6) 变更重复判定：按**作用范围**判，不是按任务一刀切
+  //
+  // - 单次事项：整个提案最多一条（它只有一天，多出来必然是重复）；
+  // - 周期任务：**同一本地日**最多一条；跨多日各一条是合法的 —— 这正是 P1-1 授权
+  //   `authorize_multi_day_overrides=true` 后的正常形态。
+  //
+  // 上一版这里只要同一任务 ≥2 条就报 MULTIPLE_CHANGES_FOR_ONE_TIME_TASK，
+  // 连「周期任务跨两天各一条」也判非法，导致引擎自己产出的授权态提案通不过自己的校验器
+  // （生成合法、校验非法）。isOneTime 当时只改了文案、没改判定，是同一处笔误。
+  final perTaskChanges = <String, List<ChangeView>>{};
   for (final change in changes) {
-    perTaskChange.putIfAbsent(change.taskId, () => <String>[]).add(change.changeId);
+    perTaskChanges.putIfAbsent(change.taskId, () => <ChangeView>[]).add(change);
   }
-  for (final entry in perTaskChange.entries) {
-    if (entry.value.length < 2) continue;
-    final isOneTime = demandByTask[entry.key]?.taskKind == ScheduleTaskKind.oneTime;
-    violations.add(
-      Violation(
-        code: 'MULTIPLE_CHANGES_FOR_ONE_TIME_TASK',
-        message: isOneTime
-            ? '同一单次事项在一个提案中出现了多条变更，应合并为一条。'
-            : '同一任务在一个提案中出现了多条变更；单次事项只允许一条。',
-        relatedTaskIds: [entry.key],
-        relatedChangeIds: entry.value,
-      ),
-    );
+  for (final entry in perTaskChanges.entries) {
+    final isOneTime =
+        demandByTask[entry.key]?.taskKind == ScheduleTaskKind.oneTime || entry.value.any((c) => c.plannedDate == null);
+    if (isOneTime) {
+      if (entry.value.length < 2) continue;
+      violations.add(
+        Violation(
+          code: 'MULTIPLE_CHANGES_FOR_ONE_TIME_TASK',
+          message: '同一单次事项在一个提案中出现了多条变更，应合并为一条。',
+          relatedTaskIds: [entry.key],
+          relatedChangeIds: entry.value.map((c) => c.changeId).toList(),
+        ),
+      );
+      continue;
+    }
+    // 周期任务：按日期分组，同一日期 ≥2 条才算重复
+    final perDay = <String, List<ChangeView>>{};
+    for (final change in entry.value) {
+      final day = scheduleDayOnly(change.plannedDate!).toIso8601String();
+      perDay.putIfAbsent(day, () => <ChangeView>[]).add(change);
+    }
+    for (final sameDay in perDay.values) {
+      if (sameDay.length < 2) continue;
+      violations.add(
+        Violation(
+          code: 'MULTIPLE_CHANGES_FOR_ONE_TIME_TASK',
+          message: '同一周期任务在同一本地日出现了多条变更，应合并为一条。',
+          relatedTaskIds: [entry.key],
+          relatedChangeIds: sameDay.map((c) => c.changeId).toList(),
+        ),
+      );
+    }
   }
 
   // 7) 块之间互相重叠（放最后：通常是前几类问题的次生现象）

@@ -288,4 +288,24 @@ warnings: ["repair_schedule 未收到 input.existing_placements，而 previous �
 **正确做法**：调用 `repair_schedule` 时，把数据库里这些任务当天的既有安排一并放进
 `input.existing_placements`；`previous` 只用于「原来排在哪、要挪多少」。
 
+## 十四、一条已被修掉的「自产提案通不过自己校验」（2026-11-06 03:3x）
+
+`MULTIPLE_CHANGES_FOR_ONE_TIME_TASK` 这条规则的判定以前**写错了作用范围**：
+只要同一任务出现 ≥2 条 change 就报，`isOneTime` 只改了文案、没改判定。
+后果是——你打开 `authorize_multi_day_overrides=true` 之后，引擎产出的
+「周期任务跨两天各一条 change」会被**引擎自己的校验器判非法**。
+
+现在的判定按作用范围分层：
+
+| 任务类型 | 允许的变更数 | 违反时报什么 |
+|---|---|---|
+| 单次事项 `one_time` | 整个提案最多 1 条 | `MULTIPLE_CHANGES_FOR_ONE_TIME_TASK` |
+| 周期任务 `recurring` | **每个本地日**最多 1 条；跨多日各一条合法 | 同上（仅同一天 ≥2 条时） |
+
+对你的实际影响：
+
+- 不要因为「同一任务有多条 change」就判我错——先看 `local_date` 是否相同；
+- 你自己拼装提案时若给同一周期任务同一天写了两条，会被这条规则拦下，这是对的；
+- 反向控制已进自检：同一天两条仍必须判非法，规则没被关掉。
+
 

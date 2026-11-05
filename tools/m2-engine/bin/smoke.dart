@@ -335,6 +335,86 @@ void main() async {
     onBlocks.length == 2 && onChanges.length == 2,
     'blocks=${onBlocks.length} changes=${onChanges.length}',
   );
+
+  // 生成器产物必须能通过自己的校验器 —— 「块多于单」与「跨多日各一条」都属合法形态。
+  // 这条是真抓过缺陷的：上一版只要同一任务 ≥2 条 change 就判 MULTIPLE_CHANGES_FOR_ONE_TIME_TASK，
+  // 于是引擎在授权态下自产的提案被自己的校验器判非法（生成合法、校验非法）。
+  final gateOffBack = handleRequest('POST', '/validate_schedule', <String, dynamic>{
+    'input': twoDayBody(authorize: false)['input'],
+    'proposal': gateOff.body['proposal'],
+  });
+  _check(
+    '未授权态自产提案再校验必须 valid（2 块 / 1 条 change）',
+    gateOffBack.status == 200 && gateOffBack.body['valid'] == true,
+    '${gateOffBack.body['valid']} ${gateOffBack.body['violations']}',
+  );
+  final gateOnBack = handleRequest('POST', '/validate_schedule', <String, dynamic>{
+    'input': twoDayBody(authorize: true)['input'],
+    'proposal': gateOn.body['proposal'],
+  });
+  _check(
+    '授权态自产提案再校验必须 valid（2 块 / 2 条 change，跨两天各一条）',
+    gateOnBack.status == 200 && gateOnBack.body['valid'] == true,
+    '${gateOnBack.body['valid']} ${gateOnBack.body['violations']}',
+  );
+
+  // 反向控制：规则必须还在，否则上面两条只是把校验关掉了。
+  final dupInput = <String, dynamic>{
+    'now': '2026-11-02T08:00:00+08:00',
+    'horizon_start': '2026-11-02T00:00:00+08:00',
+    'horizon_end': '2026-11-02T22:00:00+08:00',
+    'base_version': 'v1',
+    'availability': <Map<String, String>>[
+      {'start_at': '2026-11-02T08:00:00+08:00', 'end_at': '2026-11-02T18:00:00+08:00'},
+    ],
+    'demands': <Map<String, Object>>[
+      {'task_id': 't-rec', 'title': '周期任务', 'required_minutes': 30, 'task_kind': 'recurring'},
+    ],
+  };
+  final sameDayDup = handleRequest('POST', '/validate_schedule', <String, dynamic>{
+    'input': dupInput,
+    'proposal': <String, dynamic>{
+      'blocks': <Map<String, String>>[
+        {
+          'task_id': 't-rec',
+          'block_id': 'b1',
+          'task_kind': 'recurring',
+          'start_at': '2026-11-02T09:00:00+08:00',
+          'end_at': '2026-11-02T09:30:00+08:00',
+        },
+      ],
+      'changes': <Map<String, Object>>[
+        {
+          'change_id': 'c1',
+          'type': 'upsert_daily_override',
+          'item_type': 'recurring',
+          'item_id': 't-rec',
+          'local_date': '2026-11-02',
+          'action': 'assign',
+          'planned_start_minute': 540,
+          'planned_end_minute': 570,
+        },
+        {
+          'change_id': 'c2',
+          'type': 'upsert_daily_override',
+          'item_type': 'recurring',
+          'item_id': 't-rec',
+          'local_date': '2026-11-02',
+          'action': 'assign',
+          'planned_start_minute': 600,
+          'planned_end_minute': 630,
+        },
+      ],
+    },
+  });
+  _check(
+    '同一周期任务同一天两条变更仍必须判非法（反向控制，规则没被关掉）',
+    sameDayDup.status == 200 &&
+        sameDayDup.body['valid'] == false &&
+        ((sameDayDup.body['violations'] as List?) ?? const [])
+            .any((v) => '${(v as Map)['code']}' == 'MULTIPLE_CHANGES_FOR_ONE_TIME_TASK'),
+    '${sameDayDup.body['valid']} ${sameDayDup.body['violations']}',
+  );
   final badMultiDay = Map<String, dynamic>.from(_fixture('normal.json')['input'] as Map)
     ..['authorize_multi_day_overrides'] = 'true';
   final badMultiDayRes = handleRequest('POST', '/generate_schedule', {'input': badMultiDay});
