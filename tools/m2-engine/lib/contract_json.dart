@@ -297,6 +297,46 @@ MappedInput scheduleInputFromJson(Map<String, dynamic> json) {
     warnings.add('input.timezone=$timezone，但契约把时区固定为 Asia/Shanghai；引擎不做时区转换。');
   }
 
+  // 多日覆盖授权开关（P1-1）：默认 false，必须显式 true 才把周期任务的安排写成多日单日例外。
+  // 此前该键**未解析**，调用方传了 true 也被静默忽略、仍是单日——属于「传了不生效且不报错」，
+  // 是本服务最不该有的失败形态（M0「不得静默降级」）。类型也须校验，避免 "true" 被当成 false。
+  var authorizeMultiDay = false;
+  if (json.containsKey('authorize_multi_day_overrides')) {
+    final raw = json['authorize_multi_day_overrides'];
+    if (raw is bool) {
+      authorizeMultiDay = raw;
+    } else if (raw != null) {
+      _fail(
+        'input.authorize_multi_day_overrides',
+        '必须是布尔值，收到 ${raw.runtimeType}；省略表示 false（只对最早一天生成单日例外）。',
+      );
+    }
+  }
+
+  // 未知键必须报出来：调用方手写 JSON 时拼错一个字母（如 authorize_multiday_overrides），
+  // 静默丢弃就等于让它以为开了多日、实际只落一天。不因未知键而 400（契约可能先行扩展），
+  // 但**绝不静默**。
+  const knownInputKeys = <String>{
+    'now',
+    'horizon_start',
+    'horizon_end',
+    'base_version',
+    'timezone',
+    'preferences',
+    'availability',
+    'fixed_blocks',
+    'demands',
+    'existing_placements',
+    'authorize_multi_day_overrides',
+  };
+  final unknownKeys = json.keys.where((key) => !knownInputKeys.contains(key)).toList()..sort();
+  if (unknownKeys.isNotEmpty) {
+    warnings.add(
+      'input 含未知键并被忽略：${unknownKeys.join(', ')}。'
+      '若为拼写错误，可能导致你以为生效的开关实际没生效（已知键：${(knownInputKeys.toList()..sort()).join(', ')}）。',
+    );
+  }
+
   final input = ScheduleInput(
     now: _instant(json['now'], 'input.now'),
     horizonStart: _instant(json['horizon_start'], 'input.horizon_start'),
@@ -308,6 +348,7 @@ MappedInput scheduleInputFromJson(Map<String, dynamic> json) {
     fixedBlocks: fixedBlocks,
     demands: demands,
     existingPlacements: placements,
+    authorizeMultiDayOverrides: authorizeMultiDay,
   );
 
   return MappedInput(input, warnings);

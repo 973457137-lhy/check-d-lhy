@@ -244,4 +244,48 @@ M0 2026-11-05 14:34:14Z 裁定要求 fail-closed。落地方式如下（**与契
 `priority` 缺失或 `null` → 该块输出 `priority_state: "unknown"`，`ordering_reason` 退化为
 `stable_input_order`。**不要把它当 0 处理**：0 是一个合法优先级，unknown 是「服务端没给」。
 
+## 十三、三个「静默失败」已封死（2026-11-06 03:2x，给 M1 接之前必读）
+
+这三条都是同一个失败形态：**调用方以为生效了，服务端拿到的却是另一回事**，而且中间不报错。
+
+### 13.1 `authorize_multi_day_overrides` 以前是「传了不生效」
+
+本轮之前该键**根本没被解析**：传 `true` 照样只对最早一天生成单日例外，且无任何提示。
+现在：
+
+- `true` / `false` → 正常生效（实测 2 天 previous：`false` 出 1 条 change，`true` 出 2 条）；
+- 字符串 `"true"`、数字 `1` → **400**，`error.field = input.authorize_multi_day_overrides`；
+- 省略 → 默认 `false`（只落最早一天）。
+
+**你要全量落库就必须显式传 `true`**，且应先在 UI 上取得用户同意——这是「不把灵活任务永久钉死」的开关，不是性能选项。
+
+### 13.2 未知 `input` 键现在会进 `warnings`
+
+手写 JSON 时把 `authorize_multi_day_overrides` 拼成 `authorize_multiday_overrides`，
+以前是静默丢弃。现在响应里会出现：
+
+```
+warnings: ["input 含未知键并被忽略：authorize_multiday_overrides。若为拼写错误，……"]
+```
+
+不因为未知键而 400（契约可能先行扩展，硬拒会挡死后续字段），但**一定看得见**。
+接进来后请把 `warnings` 打到日志，别丢。
+
+### 13.3 `repair_schedule` 的 `action` 只看 `existing_placements`，不看 `previous`
+
+判定 `assign` / `reschedule` 的依据是 **`input.existing_placements`**（服务端已知的既有安排），
+**不是 `previous`**——`previous` 只是「上一版提案」，它究竟有没有落库，只有你那边知道，引擎不猜。
+
+后果：`repair_schedule` 只传 `previous`、不传 `existing_placements` 时，所有 change 都会是
+`assign`（首次指派）。若上一版其实已写入数据库，这就退化成「重复新建」。
+
+现在遇到这种组合会返回 warning：
+
+```
+warnings: ["repair_schedule 未收到 input.existing_placements，而 previous 含 N 个块：……会把「改期」误标成「新建」"]
+```
+
+**正确做法**：调用 `repair_schedule` 时，把数据库里这些任务当天的既有安排一并放进
+`input.existing_placements`；`previous` 只用于「原来排在哪、要挪多少」。
+
 

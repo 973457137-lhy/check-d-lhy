@@ -201,6 +201,17 @@ HandlerResult _repair(Map<String, dynamic> envelope, Map<String, dynamic> payloa
     previous,
     maxShiftMinutes: maxShift,
   );
+  // action 的判定依据是 `input.existing_placements`（服务端已知的既有安排），**不是 previous**：
+  // previous 只是「上一版提案」，它是否已落库只有服务端知道。二者都为空时所有 change 会写成
+  // `assign`（首次指派）；若上一版其实已落库，这会变成重复创建。引擎不替调用方猜，但要报出来。
+  final warnings = <String>[...mapped.warnings];
+  if (mapped.input.existingPlacements.isEmpty && previous.blocks.isNotEmpty) {
+    warnings.add(
+      'repair_schedule 未收到 input.existing_placements，而 previous 含 ${previous.blocks.length} 个块：'
+      '本次所有 upsert_daily_override 的 action 都会是 assign（首次指派）。'
+      '若上一版提案已写入数据库，请传 existing_placements，否则会把「改期」误标成「新建」。',
+    );
+  }
   return HandlerResult(200, {
     'ok': true,
     'proposal': proposal.toJson(),
@@ -211,7 +222,7 @@ HandlerResult _repair(Map<String, dynamic> envelope, Map<String, dynamic> payloa
       'explanations': proposal.notes.length,
       'max_shift_minutes': maxShift,
     },
-    if (mapped.warnings.isNotEmpty) 'warnings': mapped.warnings,
+    if (warnings.isNotEmpty) 'warnings': warnings,
   });
 }
 

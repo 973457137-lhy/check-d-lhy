@@ -285,6 +285,91 @@ void main() async {
     '${errorEnvelope.status} ${errorEnvelope.body['error']}',
   );
 
+  // D-1：多日覆盖开关必须**真改变输出**，不能「传了 true 却仍只落一天」。
+  // 用 2 天 previous（同任务两个块）走 repair：未授权只出 1 条 change，授权后出 2 条。
+  Map<String, dynamic> twoDayBody({required bool authorize}) => {
+        'input': <String, dynamic>{
+          'now': '2026-11-02T08:00:00+08:00',
+          'horizon_start': '2026-11-02T00:00:00+08:00',
+          'horizon_end': '2026-11-03T23:00:00+08:00',
+          'base_version': 'v1',
+          'availability': <Map<String, String>>[
+            {'start_at': '2026-11-02T08:00:00+08:00', 'end_at': '2026-11-02T18:00:00+08:00'},
+            {'start_at': '2026-11-03T08:00:00+08:00', 'end_at': '2026-11-03T18:00:00+08:00'},
+          ],
+          'demands': <Map<String, Object>>[
+            {'task_id': 't-multi', 'title': '每日背单词', 'required_minutes': 30},
+          ],
+          if (authorize) 'authorize_multi_day_overrides': true,
+        },
+        'previous': <String, dynamic>{
+          'blocks': <Map<String, String>>[
+            {
+              'task_id': 't-multi',
+              'block_id': 'b1',
+              'start_at': '2026-11-02T10:00:00+08:00',
+              'end_at': '2026-11-02T10:30:00+08:00',
+            },
+            {
+              'task_id': 't-multi',
+              'block_id': 'b2',
+              'start_at': '2026-11-03T10:00:00+08:00',
+              'end_at': '2026-11-03T10:30:00+08:00',
+            },
+          ],
+        },
+      };
+  final gateOff = handleRequest('POST', '/repair_schedule', twoDayBody(authorize: false));
+  final gateOn = handleRequest('POST', '/repair_schedule', twoDayBody(authorize: true));
+  final offBlocks = ((gateOff.body['proposal'] as Map?)?['blocks'] as List?) ?? const [];
+  final offChanges = ((gateOff.body['proposal'] as Map?)?['changes'] as List?) ?? const [];
+  final onBlocks = ((gateOn.body['proposal'] as Map?)?['blocks'] as List?) ?? const [];
+  final onChanges = ((gateOn.body['proposal'] as Map?)?['changes'] as List?) ?? const [];
+  _check(
+    '多日未授权: 2 块仍展示，但只出 1 条 change（不把灵活任务钉死多日）',
+    offBlocks.length == 2 && offChanges.length == 1,
+    'blocks=${offBlocks.length} changes=${offChanges.length}',
+  );
+  _check(
+    '多日已授权: 2 块 + 2 条 change（开关真生效，不是被静默忽略）',
+    onBlocks.length == 2 && onChanges.length == 2,
+    'blocks=${onBlocks.length} changes=${onChanges.length}',
+  );
+  final badMultiDay = Map<String, dynamic>.from(_fixture('normal.json')['input'] as Map)
+    ..['authorize_multi_day_overrides'] = 'true';
+  final badMultiDayRes = handleRequest('POST', '/generate_schedule', {'input': badMultiDay});
+  _check(
+    'authorize_multi_day_overrides="true" 被拒（字符串不等于布尔，不得静默当 false）',
+    badMultiDayRes.status == 400 &&
+        '${(badMultiDayRes.body['error'] as Map?)?['field']}' == 'input.authorize_multi_day_overrides',
+    '${badMultiDayRes.status} ${badMultiDayRes.body['error']}',
+  );
+
+  // D-2：未知键必须报警，否则拼错一个字母的开关会被静默丢弃。
+  final typoInput = Map<String, dynamic>.from(_fixture('normal.json')['input'] as Map)
+    ..['authorize_multiday_overrides'] = true;
+  final typoRes = handleRequest('POST', '/generate_schedule', {'input': typoInput});
+  _check(
+    '未知 input 键: 200 但 warnings 点名该键',
+    typoRes.status == 200 &&
+        ((typoRes.body['warnings'] as List?) ?? const [])
+            .any((w) => '$w'.contains('authorize_multiday_overrides')),
+    '${typoRes.status} ${typoRes.body['warnings']}',
+  );
+
+  // D-3：repair 未传 existing_placements 时，action 会恒为 assign —— 必须报出来，不静默。
+  final repairNoPlacement = handleRequest('POST', '/repair_schedule', <String, dynamic>{
+    'input': _fixture('normal.json')['input'],
+    'previous': normalProposal,
+  });
+  _check(
+    'repair 缺 existing_placements: warnings 说明 action 会全是 assign',
+    repairNoPlacement.status == 200 &&
+        ((repairNoPlacement.body['warnings'] as List?) ?? const [])
+            .any((w) => '$w'.contains('assign')),
+    '${repairNoPlacement.status} ${repairNoPlacement.body['warnings']}',
+  );
+
   stdout.writeln('== 3. 错误路径 ==');  final noOffset = _body(_fixture('normal.json'));
   (noOffset['input'] as Map<String, dynamic>)['now'] = '2026-11-02T08:00:00';
   final rejected = handleRequest('POST', '/generate_schedule', noOffset);
