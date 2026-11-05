@@ -1,9 +1,31 @@
 # M2 ⇄ M1 接口约定（引擎可调用化）
 
 > 依据：M0 2026-11-05 12:53:27Z《五日冲刺》§2（M2 负责调度引擎可调用化与核心逻辑集成）。
-> 作者：B（M2）刘恒瑜　生成：2026-11-05 22:00（+08）
-> 状态：**已可用**（服务可启动、三个场景实测通过、`smoke` 36 项全绿、Python 客户端实测通过）。
+> 作者：B（M2）刘恒瑜。初版 2026-11-05 22:00，**末次修订 2026-11-06 05:1x**（随 `0c40adf` + 后续）。
+> 状态：**已可用**。适配层自检 **73 项 / 0 失败 / exit 0**；域测试双通道 **69/69**（Dart 3.13.7，非 CI）。
 > 一句话：M1 只要会发 HTTP + JSON，就能拿到引擎的排程结果，**不需要 Dart 环境、不需要读我的源码**。
+
+---
+
+## 〇、速查：你只关心这 12 件事（其余章节按需查）
+
+| # | 事项 | 一句话 |
+|---|---|---|
+| 1 | 启动 | `dart run tools/m2-engine/bin/serve.dart`，默认 `127.0.0.1:8787`；无 pubspec、无第三方依赖、不用 Docker |
+| 2 | 端点 | `GET /health`、`POST /generate_schedule`、`/validate_schedule`、`/repair_schedule`，**不再增加** |
+| 3 | 请求壳 | `proposal` / `previous` / `max_shift_minutes` 是**与 `input` 并列的兄弟键**，不要塞进 `input` |
+| 4 | 时间 | 一律带 `+08:00`；无偏移直接 400 并指出字段路径 |
+| 5 | `availability` | **必填**。`[]` = 确认全忙；`null` = 未提供（按偏好推导）；数组 = 显式窗口。省略字段 = 400 |
+| 6 | `action` | `assign`（首次指派）/ `reschedule`（改期）；判据是**同任务且同一天**有既有安排 |
+| 7 | 跨天无 change | 未传 `authorize_multi_day_overrides=true` 时，多日只对**最早一天**出 change——是设计，不是漏 |
+| 8 | `max_shift_minutes` | 是**搜索边界不是硬约束**：边界内无解会退「最早可用」，排出超限位移；超限会进 `warnings` |
+| 9 | `priority` | 缺失或 `null` → `priority_state=unknown`，**不要当 0** |
+| 10 | 错误体 | 恒为 `{ok:false, error:{code, field, message, retryable}}`；4xx 一律 `retryable=false`，5xx 才 `true` |
+| 11 | `warnings` | 请**打到日志**。它是「你写错了但没报错」的唯一通道（未知键、超限、action 误判风险都在这里） |
+| 12 | 坐标 | 报坐标必须给「服务代码四文件 blob + 现行 head」两件，只给 head 会过期 |
+
+> 契约信封（`request_id` / `snapshot_ref` / `base_version` 等五键）由**你**补，本服务不冒充——
+> 详见 §九 F-1。本服务只算不存、不批、不读（详见 §十）。
 
 ---
 
@@ -105,8 +127,18 @@ dart run tools/m2-engine/bin/smoke.dart     # 末行 SMOKE OK，退出码 0
 | 固定日程冲突 | `fixtures/conflict.json` | 任务进 `unplanned_tasks` 并带 `reason_code` |
 | 已完成任务 | `fixtures/already_done.json` | 该任务不出块、不进 unplanned、`ALREADY_DONE_TODAY` 带 `related_task_ids` |
 
-`smoke` 另覆盖：无偏移时间被拒（400 + `field=input.now`）、未知路径 404、GET 打业务端点 405、
-外部提案的 `FIXED_EVENT_CONFLICT` 先于 `BLOCK_OVERLAP`、`message` 不含裸 ID、真实 HTTP 往返与进程内同结果。
+上表只列**业务场景**。`smoke`（73 项，末行 `SMOKE OK` / exit 0）另覆盖六大类，跑一次几分钟：
+
+| 类别 | 覆盖点（举例） |
+|---|---|
+| 输入边界 | 无偏移时间被拒（400 + `field=input.now`）；`availability` 三态；`max_shift_minutes` 非法类型/负数 |
+| 语义正确性 | 逾期不进 blocks；`assign`/`reschedule` 三分支；多日授权开关 on/off 行为差异 |
+| 自洽性 | **引擎自产提案回喂校验器必须 valid**（含授权态「跨两天各一条 change」） |
+| 反向控制 | 同任务同日两条 change 仍判非法；上限未超限时不得误报 |
+| 错误体一致性 | 所有 4xx 的 `error.retryable` 是 `bool false`；畸形 JSON 也是 400 不是 500 |
+| 传输一致性 | 真实 HTTP 往返与进程内调用同结果 |
+
+> 这些不是「跑过一次就算」：每条都有对应的反向用例，防止把校验删掉后仍然全绿。
 
 ---
 
@@ -244,6 +276,20 @@ M0 2026-11-05 14:34:14Z 裁定要求 fail-closed。落地方式如下（**与契
 `priority` 缺失或 `null` → 该块输出 `priority_state: "unknown"`，`ordering_reason` 退化为
 `stable_input_order`。**不要把它当 0 处理**：0 是一个合法优先级，unknown 是「服务端没给」。
 
+### 12.5 `action` 的判据是「同任务 **且同一天** 有既有安排」（2026-11-06 04:5x 三条实测）
+
+| `existing_placements` 情况 | 结果 | 为什么 |
+|---|---|---|
+| 没有该任务的安排 | `assign` | 首次指派 |
+| 该任务**同一天**有安排 | `reschedule` | 改期 |
+| 该任务**别的日期**有安排 | `assign` | 那天是新建，不是改期 |
+
+第三行是最容易写错的：只按任务匹配、漏掉日期维度的话，跨天情况会全被判成改期，
+于是「新建」被当成「更新」写库，静默覆盖别的日期。三条都已入自检。
+
+所以你传 `existing_placements` 时**必须逐条带上正确的日期**（`start_at` 的本地日即为判定日），
+不要把「这个任务历史上出现过」当成「今天已有安排」。
+
 ## 十三、三个「静默失败」已封死（2026-11-06 03:2x，给 M1 接之前必读）
 
 这三条都是同一个失败形态：**调用方以为生效了，服务端拿到的却是另一回事**，而且中间不报错。
@@ -287,6 +333,24 @@ warnings: ["repair_schedule 未收到 input.existing_placements，而 previous �
 
 **正确做法**：调用 `repair_schedule` 时，把数据库里这些任务当天的既有安排一并放进
 `input.existing_placements`；`previous` 只用于「原来排在哪、要挪多少」。
+
+### 13.4 第四条（2026-11-06 04:3x 补）：非法 JSON 的错误体曾漏 `retryable`
+
+真实 HTTP 实测发现：**请求体不是合法 JSON 时，返回的 400 里没有 `retryable` 字段**，
+而其他所有错误都有。原因是这条分支在 `bin/serve.dart` 里手工拼了一份错误体，没走统一构造。
+
+后果对你不小：客户端若写 `if (!resp.error.retryable) 放弃重试`，遇到这条分支会读到 `null`，
+在动态语言里直接当 `false` 用还好，在强类型语言/严格解析里会抛异常，
+表现为「重试逻辑时灵时不灵」，而且只在传坏 JSON 时触发，很难复现。
+
+已改为**全服务只有一个错误体构造**（`errorBody`），HTTP 层的 JSON 解析分支也复用它。
+零散的手搓错误体在代码里已经清零（`grep "'error':"` 只剩定义那一处）。
+
+顺带把请求体解码抽成了 `decodeBodyOrError`，放在 `lib/handler.dart`：
+这样自检能直接测这条分支，而不必在脚本里再抄一份解码逻辑
+（抄一份就是「测的是副本、跑的是另一份」，本项目反复踩过的假通过）。
+
+约定：**任何 4xx 的 `error.retryable` 都是 `false`，5xx 才是 `true`**，无一例外。
 
 ## 十四、一条已被修掉的「自产提案通不过自己校验」（2026-11-06 03:3x）
 
@@ -375,35 +439,3 @@ max_shift_minutes=10 未能满足：t-a（位移 420 分钟 > 上限 10）。该
 - 若只是「尽量别挪太远」→ 可以落库，但建议把 warning 透给用户看。
 
 不要因为它返回 200 就认为约束满足了——200 只说明「排出来了」，不说明「按你的边界排的」。
-
-### 13.4 第四条（2026-11-06 04:3x 补）：非法 JSON 的错误体曾漏 `retryable`
-
-真实 HTTP 实测发现：**请求体不是合法 JSON 时，返回的 400 里没有 `retryable` 字段**，
-而其他所有错误都有。原因是这条分支在 `bin/serve.dart` 里手工拼了一份错误体，没走统一构造。
-
-后果对你不小：客户端若写 `if (!resp.error.retryable) 放弃重试`，遇到这条分支会读到 `null`，
-在动态语言里直接当 `false` 用还好，在强类型语言/严格解析里会抛异常，
-表现为「重试逻辑时灵时不灵」，而且只在传坏 JSON 时触发，很难复现。
-
-已改为**全服务只有一个错误体构造**（`errorBody`），HTTP 层的 JSON 解析分支也复用它。
-零散的手搓错误体在代码里已经清零（`grep "'error':"` 只剩定义那一处）。
-
-顺带把请求体解码抽成了 `decodeBodyOrError`，放在 `lib/handler.dart`：
-这样自检能直接测这条分支，而不必在脚本里再抄一份解码逻辑
-（抄一份就是「测的是副本、跑的是另一份」，本项目反复踩过的假通过）。
-
-约定：**任何 4xx 的 `error.retryable` 都是 `false`，5xx 才是 `true`**，无一例外。
-
-### 12.5 `action` 的判据是「同任务 **且同一天** 有既有安排」（2026-11-06 04:5x 三条实测）
-
-| `existing_placements` 情况 | 结果 | 为什么 |
-|---|---|---|
-| 没有该任务的安排 | `assign` | 首次指派 |
-| 该任务**同一天**有安排 | `reschedule` | 改期 |
-| 该任务**别的日期**有安排 | `assign` | 那天是新建，不是改期 |
-
-第三行是最容易写错的：只按任务匹配、漏掉日期维度的话，跨天情况会全被判成改期，
-于是「新建」被当成「更新」写库，静默覆盖别的日期。三条都已入自检。
-
-所以你传 `existing_placements` 时**必须逐条带上正确的日期**（`start_at` 的本地日即为判定日），
-不要把「这个任务历史上出现过」当成「今天已有安排」。
