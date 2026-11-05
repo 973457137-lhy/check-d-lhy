@@ -1,0 +1,36 @@
+{
+  "scenario": "conflict",
+  "description": "可用窗口只剩 30 分钟且被课程占去一半，90 分钟任务排不进去，期望进 unplanned",
+  "input": {
+    "now": "2026-11-03T08:00:00+08:00",
+    "horizon_start": "2026-11-03T08:00:00+08:00",
+    "horizon_end": "2026-11-03T12:00:00+08:00",
+    "base_version": "fixture-conflict-v1",
+    "timezone": "Asia/Shanghai",
+    "preferences": {
+      "day_start_minute": 480,
+      "day_end_minute": 720,
+      "minimum_block_minutes": 15
+    },
+    "availability": [
+      { "start_at": "2026-11-03T08:00:00+08:00", "end_at": "2026-11-03T09:00:00+08:00" }
+    ],
+    "fixed_blocks": [
+      {
+        "owner_id": "course_algo",
+        "owner_type": "course",
+        "title": "算法课",
+        "start_at": "2026-11-03T08:30:00+08:00",
+        "end_at": "2026-11-03T09:00:00+08:00"
+      }
+    ],
+    "demands": [
+      {
+        "task_id": "t_thesis",
+        "title": "写毕业论文提纲",
+        "task_kind": "recurring",
+        "target_duration_seconds": 5400
+      }
+    ]
+  }
+}
