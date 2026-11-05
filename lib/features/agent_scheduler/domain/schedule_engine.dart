@@ -61,7 +61,11 @@ List<ScheduleWindow> _usableWindows(ScheduleInput input) {
 /// 契约 `preferences.day_start_minute` / `day_end_minute` 才是前端直传的形状，
 /// 显式给出 [ScheduleInput.availability] 时以它为准，否则由偏好逐日推导。
 List<ScheduleWindow> _effectiveAvailability(ScheduleInput input) {
-  if (input.availability.isNotEmpty) return input.availability.toList();
+  // 三态（M0 2026-11-05 裁定）：只有 null 才推导；
+  // 空数组是「调用方显式声明没有可用时间」，必须原样返回空表，
+  // 否则会把「用户说今天没空」误排进 preferences 推导出的时段。
+  final explicit = input.availability;
+  if (explicit != null) return explicit.toList();
 
   final preferences = input.preferences;
   final windows = <ScheduleWindow>[];

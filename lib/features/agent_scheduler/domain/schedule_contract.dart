@@ -338,7 +338,7 @@ class ScheduleInput {
     required this.baseVersion,
     this.timezone = 'Asia/Shanghai',
     this.preferences = const SchedulePreferences(),
-    this.availability = const [],
+    this.availability,
     this.fixedBlocks = const [],
     this.demands = const [],
     this.existingPlacements = const [],
@@ -363,8 +363,15 @@ class ScheduleInput {
 
   /// 用户允许被排程的时间窗口。
   ///
-  /// 为空时会退化为由 [preferences] 的 `dayStartMinute` / `dayEndMinute` 推导。
-  final List<ScheduleWindow> availability;
+  /// **三态语义（M0 2026-11-05 裁定，不可合并）**：
+  /// - `null`：调用方未显式提供，允许按 [preferences] 的
+  ///   `dayStartMinute` / `dayEndMinute` 逐日推导；
+  /// - **空数组**：调用方显式声明「没有可用时间」，**不得**回退到偏好推导，
+  ///   全部任务进入 `unplanned_tasks` 且 `reason_code = NO_AVAILABILITY`；
+  /// - 非空数组：只使用显式提供的时间段，不推导。
+  ///
+  /// 该字段是纯输入字段，**不进任何序列化输出**。
+  final List<ScheduleWindow>? availability;
 
   /// 硬约束：课程与会议。
   final List<ScheduleFixedBlock> fixedBlocks;
@@ -643,6 +650,9 @@ class ScheduleProposal {
       notes.where((note) => note.isPublic).toList();
 
   /// 方案 A 下 M2 只序列化内部四部分，服务端权威字段一律不输出。
+  ///
+  /// **这是内部结果，不得直接当作 v1 公开响应**（M0 2026-11-05 裁定 C1）：
+  /// 其中的 `explanations` 含 repair 专用码，对外必须改用 [publicExplanations]。
   Map<String, dynamic> toJson() => {
     'blocks': blocks.map((block) => block.toJson()).toList(),
     'changes': changes.map((change) => change.toJson()).toList(),

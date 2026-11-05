@@ -1091,6 +1091,80 @@ void main() {
       expect(proposal.blocks.single.endAt, _at(0, 10));
     });
 
+    // M0 2026-11-05 裁定：availability 三态不可合并。
+    // null=未提供（可推导）／[]=显式无可用时间（禁止推导）／非空=只用显式。
+    test('availability 三态：null 推导、空数组不推导、非空只用显式', () {
+      ScheduleInput build(List<ScheduleWindow>? availability) => ScheduleInput(
+            now: _at(0, 7),
+            horizonStart: _at(0, 8),
+            horizonEnd: _at(0, 18),
+            baseVersion: 'v1',
+            availability: availability,
+            preferences: const SchedulePreferences(
+              dayStartMinute: 9 * 60,
+              dayEndMinute: 17 * 60,
+            ),
+            demands: [
+              ScheduleTaskDemand(
+                taskId: 'task-tri',
+                title: '自习',
+                requiredMinutes: 60,
+              ),
+            ],
+          );
+
+      // ① null：未提供 → 按 preferences 推导，落在 09:00-10:00
+      final derived = generateSchedule(build(null));
+      expect(derived.blocks, hasLength(1), reason: 'null 应推导出窗口并排入');
+      expect(derived.blocks.single.startAt, _at(0, 9), reason: 'null 应由 dayStartMinute 推导');
+      expect(derived.unplannedTasks, isEmpty, reason: 'null 不应产生未安排');
+
+      // ② 空数组：显式无可用时间 → 不得回退推导，全部未安排
+      final explicitEmpty = generateSchedule(build(const <ScheduleWindow>[]));
+      expect(explicitEmpty.blocks, isEmpty,
+          reason: '[] 是显式无时间，绝不能回退到 preferences 排出 09:00');
+      expect(explicitEmpty.unplannedTasks, hasLength(1), reason: '[] 下任务必须进未安排');
+      expect(
+        explicitEmpty.unplannedTasks.single.toJson()['reason_code'],
+        'NO_AVAILABILITY',
+        reason: '[] 的未安排原因必须是 NO_AVAILABILITY',
+      );
+      expect(
+        explicitEmpty.publicExplanations.map((note) => note.code),
+        contains('NO_AVAILABILITY_WINDOW'),
+      );
+
+      // ③ 非空：只使用显式窗口，忽略 preferences 的 09:00 起点
+      final explicit = generateSchedule(build([_window(0, 10, 11)]));
+      expect(explicit.blocks, hasLength(1), reason: '非空窗口应正常排入');
+      expect(explicit.blocks.single.startAt, _at(0, 10),
+          reason: '非空时应只用显式窗口，不得回退到 09:00');
+    });
+
+    test('availability 是纯输入字段：Proposal 序列化里不出现该键', () {
+      final input = ScheduleInput(
+        now: _at(0, 7),
+        horizonStart: _at(0, 8),
+        horizonEnd: _at(0, 18),
+        baseVersion: 'v1',
+        availability: [_window(0, 9, 12)],
+        demands: [
+          ScheduleTaskDemand(
+            taskId: 'task-iso',
+            title: '自习',
+            requiredMinutes: 60,
+          ),
+        ],
+      );
+
+      final json = generateSchedule(input).toJson();
+
+      expect(json.containsKey('availability'), isFalse,
+          reason: 'availability 只进不出，不得泄漏到 Proposal 序列化');
+      expect(json.keys.toSet(),
+          {'blocks', 'changes', 'unplanned_tasks', 'explanations'});
+    });
+
     test('小于最小块长度的碎片不参与排程', () {
       final input = ScheduleInput(
         now: _at(0, 7),
