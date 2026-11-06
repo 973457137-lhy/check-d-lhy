@@ -1,11 +1,10 @@
-/// 适配层自检：不开框架、不装依赖，`dart run tools/m2-engine/bin/smoke.dart` 直接跑。
-///
-/// 覆盖两类通道：
-/// 1. 进程内调用 `handleRequest`（与 HTTP 层同一函数）；
-/// 2. 真起一个 HttpServer，用 HttpClient 打一轮（证明网络链路、编码、状态码都对）。
-///
-/// 退出码 0 = 全绿；1 = 有断言失败（会打印实际值，不打印「应该没问题」）。
-library;
+// 适配层自检：不开框架、不装依赖，`dart run tools/m2-engine/bin/smoke.dart` 直接跑。
+//
+// 覆盖两类通道：
+// 1. 进程内调用 `handleRequest`（与 HTTP 层同一函数）；
+// 2. 真起一个 HttpServer，用 HttpClient 打一轮（证明网络链路、编码、状态码都对）。
+//
+// 退出码 0 = 全绿；1 = 有断言失败（会打印实际值，不打印「应该没问题」）。
 
 import 'dart:convert';
 import 'dart:io';

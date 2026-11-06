@@ -1,13 +1,12 @@
-/// M2 调度引擎的 HTTP 入口（纯 Dart，`dart:io`，无 Flutter、无第三方依赖）。
-///
-/// 启动：
-///   cd E:/Projects/check-d-lhy
-///   dart run tools/m2-engine/bin/serve.dart
-///   # 可选：M2_ENGINE_PORT=9000 M2_ENGINE_HOST=0.0.0.0
-///
-/// 只有三个业务端点：/generate_schedule、/validate_schedule、/repair_schedule，
-/// 外加 /health。语义全部在 domain 引擎里，本文件只做 HTTP 编解码与日志。
-library;
+// M2 调度引擎的 HTTP 入口（纯 Dart，`dart:io`，无 Flutter、无第三方依赖）。
+//
+// 启动：
+//   cd E:/Projects/check-d-lhy
+//   dart run tools/m2-engine/bin/serve.dart
+//   # 可选：M2_ENGINE_PORT=9000 M2_ENGINE_HOST=0.0.0.0
+//
+// 只有三个业务端点：/generate_schedule、/validate_schedule、/repair_schedule，
+// 外加 /health。语义全部在 domain 引擎里，本文件只做 HTTP 编解码与日志。
 
 import 'dart:convert';
 import 'dart:io';
