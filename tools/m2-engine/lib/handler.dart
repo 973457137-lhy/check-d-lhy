@@ -21,6 +21,17 @@ class HandlerResult {
 
 const String serviceVersion = '1.0.0';
 
+/// 语义版本戳：**只要引擎行为变了就必须改这一行**。
+///
+/// 起因是一次真实误判：M3 拿一个早已启动、从未重启的 8787 进程做验收，
+/// 那个进程加载的是修复前的代码，于是她得出「M2 对 c5 与 P0 零修复」并上报 M0。
+/// `dart run` 不会热重载，进程启动那一刻的代码就是它永远的行为，但 `/health` 当时
+/// 不暴露任何版本信息，双方都无法自证「你打的是哪一版」。
+///
+/// 约定：`semantics` 里每个布尔值对应一条**已被测过**的行为；改了行为就改它，
+/// 并同步 [serviceVersion]。这样任何人 `curl /health` 就能判断该进程是否含某项修复。
+const String semanticsStamp = 'm2-engine/2026-11-06T05:15Z';
+
 /// 契约基准（M2 侧认定的冻结组合），仅作标识，不参与计算。
 const String contractBasis = '39f7f965';
 
@@ -35,9 +46,24 @@ HandlerResult handleRequest(String method, String path, Object? body) {
         'ok': true,
         'service': 'm2-engine',
         'version': serviceVersion,
+        'semantics_stamp': semanticsStamp,
         'contract_basis': contractBasis,
         'endpoints': ['GET /health', 'POST /generate_schedule', 'POST /validate_schedule', 'POST /repair_schedule'],
         'now_source': 'request-provided（服务端/Agent 显式传 now，引擎不读系统时钟）',
+        // 行为开关表：用来判断「你打到的这个进程」有没有某项修复。
+        // 全为 true 才等于当前 head 的行为；有 false 说明进程是旧代码，必须重启再验收。
+        'semantics': <String, bool>{
+          'overdue_prefilter': true, // P0-1：逾期任务不进 blocks
+          'overdue_reason_codes': true, // P0-3：UNSCHEDULABLE_OVERDUE / INSUFFICIENT_TIME_BEFORE_DEADLINE
+          'unplanned_four_fields': true, // P0-3：reason_code/reason_message/basis/suggested_actions
+          'action_assign_reschedule': true, // P1-1：首次指派 assign、改期 reschedule
+          'multi_day_gate': true, // P1-1：未授权只落最早一天
+          'ordering_reason_priority_state': true, // P1-2/P1-3
+          'generator_self_validates': true, // 自产提案回喂校验器必须 valid
+          'error_body_always_retryable': true, // 所有错误体恒带 retryable
+          'unknown_input_keys_warned': true, // 未知 input 键进 warnings
+          'starts_clamped_to_now': true, // 块起点不得早于 now
+        },
       });
     }
     if (_postRoutes.contains(route)) {

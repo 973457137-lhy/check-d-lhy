@@ -45,6 +45,21 @@ void main() async {
 
   final normal = handleRequest('POST', '/generate_schedule', _body(_fixture('normal.json')));
   _check('normal: 200', normal.status == 200, '${normal.status} ${normal.body['error']}');
+  // /health 必须能自证「你打到的这一版有哪些行为」——否则验收方无法区分
+  // 「代码没修」和「进程是旧的」。曾因此被误判为「M2 零修复」并上报 M0。
+  final healthRes = handleRequest('GET', '/health', null);
+  final semantics = (healthRes.body['semantics'] as Map?)?.cast<String, bool>() ?? const <String, bool>{};
+  _check(
+    '/health 暴露 semantics_stamp（可判断进程版本）',
+    '${healthRes.body['semantics_stamp'] ?? ''}'.isNotEmpty,
+    '${healthRes.body['semantics_stamp']}',
+  );
+  _check(
+    '/health 的 semantics 全为 true 且条数够（有 false 即表示旧进程）',
+    semantics.isNotEmpty && semantics.values.every((v) => v == true),
+    '$semantics',
+  );
+
   final normalProposal = (normal.body['proposal'] as Map).cast<String, dynamic>();
   final normalBlocks = (normalProposal['blocks'] as List).cast<Map<String, dynamic>>();
   _check('normal: 至少两块', normalBlocks.length >= 2, '实际 ${normalBlocks.length}');
@@ -634,6 +649,41 @@ void main() async {
     actionOf(handleRequest('POST', '/generate_schedule', placementBody(placementDay: '2026-11-03'))) ==
         'assign',
     '${actionOf(handleRequest('POST', '/generate_schedule', placementBody(placementDay: '2026-11-03')))}',
+  );
+
+  // M3 2026-11-06 03:46Z 报「生成器候选起点未钳到 now，4 小时任务被排成 08:00-12:00」。
+  // 我方实测不成立：起点钳到 now。此断言把它钉死，防止将来退化。
+  final clampBody = <String, dynamic>{
+    'input': <String, dynamic>{
+      'now': '2026-11-02T11:44:00+08:00',
+      'horizon_start': '2026-11-02T00:00:00+08:00',
+      'horizon_end': '2026-11-02T22:00:00+08:00',
+      'base_version': 'v1',
+      'availability': <Map<String, String>>[
+        {'start_at': '2026-11-02T08:00:00+08:00', 'end_at': '2026-11-02T18:00:00+08:00'},
+      ],
+      'demands': <Map<String, Object>>[
+        {'task_id': 't-long', 'title': '4小时任务', 'required_minutes': 240},
+      ],
+    },
+  };
+  final clamped = handleRequest('POST', '/generate_schedule', clampBody);
+  final clampedBlocks = ((clamped.body['proposal'] as Map?)?['blocks'] as List?) ?? const [];
+  _check(
+    '块起点不得早于 now：now=11:44 的 4 小时任务必须从 11:44 起，不是 08:00',
+    clampedBlocks.isNotEmpty &&
+        '${(clampedBlocks.first as Map)['start_at']}' == '2026-11-02T11:44:00+08:00',
+    '${clampedBlocks.map((b) => (b as Map)['start_at']).toList()}',
+  );
+  final tooLate = Map<String, dynamic>.from(clampBody);
+  (tooLate['input'] as Map<String, dynamic>)['now'] = '2026-11-02T14:44:00+08:00';
+  final tooLateRes = handleRequest('POST', '/generate_schedule', tooLate);
+  final tooLateUnplanned = ((tooLateRes.body['proposal'] as Map?)?['unplanned_tasks'] as List?) ?? const [];
+  _check(
+    '剩余时间不足时进 unplanned（now=14:44 只剩 3h16m，4 小时任务排不下）',
+    tooLateUnplanned.isNotEmpty &&
+        '${(tooLateUnplanned.first as Map)['reason_code']}' == 'WINDOW_INSUFFICIENT',
+    '${tooLateUnplanned.map((u) => (u as Map)['reason_code']).toList()}',
   );
 
   stdout.writeln('== 3. 错误路径 ==');  final noOffset = _body(_fixture('normal.json'));
