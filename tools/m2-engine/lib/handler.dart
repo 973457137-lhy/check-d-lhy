@@ -182,6 +182,34 @@ HandlerResult _validate(Map<String, dynamic> envelope, Map<String, dynamic> payl
         spanning.add('${block.blockId}（${_isoInstant(block.startAt)} → ${_isoInstant(block.endAt)}）');
       }
     }
+    // 契约 §5.6 另一句：「同一单次事项在一个提案中最多出现一个可持久化 block」。
+    // 这里同样按结构错误处理（422 PROPOSAL_INVALID），原因见下：
+    // §5.8 的 violation 码是**封闭 8 值**，其中只有 MULTIPLE_BLOCKS_FOR_RECURRING_TASK_DAY
+    // 与多块有关，且名字明确限定 recurring；为单次事项复用它会让消费方误判任务类型，
+    // 自造新码又违反「未知 code 必须按 PROPOSAL_INVALID 拒绝」。
+    // 故：规则有、码没有 —— 只能走 §5.8 的结构错误通道。该契约缺口已上报 M0/M3。
+    final oneTimeBlocks = <String, List<String>>{};
+    for (final block in blocks) {
+      if (block.taskKindCode != 'one_time') continue;
+      oneTimeBlocks.putIfAbsent(block.taskId, () => <String>[]).add(block.blockId);
+    }
+    final multiOneTime = oneTimeBlocks.entries.where((e) => e.value.length > 1).toList();
+    if (multiOneTime.isNotEmpty) {
+      final detail = multiOneTime
+          .map((e) => '${e.key}（块：${e.value.join('、')}）')
+          .join('；');
+      return HandlerResult(
+        422,
+        errorBody(
+          code: 'PROPOSAL_INVALID',
+          field: 'proposal.blocks',
+          message: '契约 §5.6 要求同一单次事项在一个提案中最多一个可持久化 block，'
+              '以下单次事项出现了多个：$detail。'
+              '需要拆解的大任务应由上游先产生多个独立 Task，不得把一个 Task 的多块当作现有能力。',
+        ),
+      );
+    }
+
     if (spanning.isNotEmpty) {
       return HandlerResult(
         422,

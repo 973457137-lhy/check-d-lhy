@@ -776,6 +776,82 @@ void main() async {
     '${selfRoundTrip.status} ${selfRoundTrip.body['valid']} ${selfRoundTrip.body['error']}',
   );
 
+  // 契约 §5.6 另一句：同一单次事项在一个提案中最多一个可持久化 block。
+  // §5.8 封闭码集里只有 RECURRING 那条多块码，无单次事项多块码 → 走结构错误 422。
+  Map<String, dynamic> oneTimeBody(List<Map<String, String>> blocks) => {
+        'input': <String, dynamic>{
+          'now': '2026-11-02T08:00:00+08:00',
+          'horizon_start': '2026-11-02T00:00:00+08:00',
+          'horizon_end': '2026-11-03T22:00:00+08:00',
+          'base_version': 'v1',
+          'availability': <Map<String, String>>[
+            {'start_at': '2026-11-02T08:00:00+08:00', 'end_at': '2026-11-02T18:00:00+08:00'},
+            {'start_at': '2026-11-03T08:00:00+08:00', 'end_at': '2026-11-03T18:00:00+08:00'},
+          ],
+          'demands': <Map<String, Object>>[
+            {'task_id': 't-one', 'title': '单次', 'required_minutes': 30, 'task_kind': 'one_time'},
+            {'task_id': 't-rec', 'title': '周期', 'required_minutes': 30, 'task_kind': 'recurring'},
+          ],
+        },
+        'proposal': <String, dynamic>{'blocks': blocks},
+      };
+  final twoOneTime = handleRequest('POST', '/validate_schedule', oneTimeBody(<Map<String, String>>[
+    {
+      'task_id': 't-one',
+      'block_id': 'b1',
+      'task_kind': 'one_time',
+      'start_at': '2026-11-02T09:00:00+08:00',
+      'end_at': '2026-11-02T09:30:00+08:00',
+    },
+    {
+      'task_id': 't-one',
+      'block_id': 'b2',
+      'task_kind': 'one_time',
+      'start_at': '2026-11-02T14:00:00+08:00',
+      'end_at': '2026-11-02T14:30:00+08:00',
+    },
+  ]));
+  _check(
+    '同一单次事项两块 → 422 PROPOSAL_INVALID（§5.6，码集无对应码故走结构错误）',
+    twoOneTime.status == 422 && '${(twoOneTime.body['error'] as Map?)?['code']}' == 'PROPOSAL_INVALID',
+    '${twoOneTime.status} ${twoOneTime.body['error']}',
+  );
+  final oneOneTime = handleRequest('POST', '/validate_schedule', oneTimeBody(<Map<String, String>>[
+    {
+      'task_id': 't-one',
+      'block_id': 'b1',
+      'task_kind': 'one_time',
+      'start_at': '2026-11-02T09:00:00+08:00',
+      'end_at': '2026-11-02T09:30:00+08:00',
+    },
+  ]));
+  _check(
+    '单次事项一块 → 200 valid（对照，证明上面不是把单次事项一律拒掉）',
+    oneOneTime.status == 200 && oneOneTime.body['valid'] == true,
+    '${oneOneTime.status} ${oneOneTime.body['valid']} ${oneOneTime.body['error']}',
+  );
+  final twoRecurring = handleRequest('POST', '/validate_schedule', oneTimeBody(<Map<String, String>>[
+    {
+      'task_id': 't-rec',
+      'block_id': 'b1',
+      'task_kind': 'recurring',
+      'start_at': '2026-11-02T09:00:00+08:00',
+      'end_at': '2026-11-02T09:30:00+08:00',
+    },
+    {
+      'task_id': 't-rec',
+      'block_id': 'b2',
+      'task_kind': 'recurring',
+      'start_at': '2026-11-03T09:00:00+08:00',
+      'end_at': '2026-11-03T09:30:00+08:00',
+    },
+  ]));
+  _check(
+    '周期任务跨两日各一块 → 200 valid（对照，新守卫不得误杀合法跨日）',
+    twoRecurring.status == 200 && twoRecurring.body['valid'] == true,
+    '${twoRecurring.status} ${twoRecurring.body['valid']} ${twoRecurring.body['error']}',
+  );
+
   stdout.writeln('== 3. 错误路径 ==');  final noOffset = _body(_fixture('normal.json'));
   (noOffset['input'] as Map<String, dynamic>)['now'] = '2026-11-02T08:00:00';
   final rejected = handleRequest('POST', '/generate_schedule', noOffset);
