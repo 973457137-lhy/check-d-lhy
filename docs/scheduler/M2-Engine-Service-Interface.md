@@ -482,3 +482,40 @@ dart analyze .compat-probe/domain      # 预期：No issues（或仅剩已知误
 **三条绕法都不用做。** 直接跑现有源码即可（你已改成直接执行而非 `dart run`，这是对的：
 `dart run` 会去找 package config 而失败）。若你仍想要 AOT 二进制，
 请在容器里用 Dart 3 编一次（我这边编不出 linux 产物），并把二进制的 sha256 回传给我登记。
+
+### 17.1 真 SDK 复核（2026-11-06 13:5x）：不是「应该能编」，是「已编过并跑过」
+
+上一节用的是 `// @dart=2.17` 语言版本标注，属**近似**验证（分析器用当前 SDK 的核心库）。
+本轮直接下了 **Dart 2.17.6（stable, windows_x64）** 做真机复核：
+
+| 检查 | 结果 |
+|---|---|
+| `dart analyze`（2.17.6） | 2 条 info（engine:135 已知误报、smoke 一处只写不读），**0 error 0 warning** |
+| `dart compile exe serve.dart` | **成功**，exit 0，产物 5,656,576 B |
+| 用 2.17.6 跑 `smoke.dart` | **77 项 / 0 失败 / SMOKE OK** |
+| 运行编出的二进制 | `/health` 200（semantics_stamp 正确）、`/generate_schedule` 200（块 08:00–09:30） |
+
+也就是说：**编译、运行、全部断言**三层都在真 2.17 下过了。上一节的近似验证结论与真机一致。
+
+### 17.2 一个新的、更省事的部署选项（实测编译只要 **2 秒**）
+
+我原本让 M1「直接跑源码」。实测后这条建议可以优化——**用容器自带的 2.17 做一次 AOT**：
+
+| 方式 | 每次冷启动成本 | 需要下载 SDK |
+|---|---|---|
+| 跑源码（`dart serve.dart`） | 每次都要 JIT/kernel 编译，约 15–20 秒 | 否 |
+| **容器内 `dart compile exe`（推荐）** | **编译一次 2 秒**，之后启动瞬时 | **否**——用容器自带的 2.17 |
+| M1 最初设想的 AOT | 一次性 ~5 分钟 | 是（下载 Dart 3） |
+
+他的容器每 10–25 分钟重启一次，所以「每次冷启动编译 15–20 秒」是持续成本；
+而「2 秒编一次、产物进部署包」只有一次性成本，且**不需要任何下载**。
+
+命令（在容器里，源码布局不变）：
+
+```bash
+cd <workspace>
+/opt/flutter/bin/dart compile exe tools/m2-engine/bin/serve.dart -o engine_bin
+./engine_bin            # 默认 127.0.0.1:8787，M2_ENGINE_PORT 可覆盖
+```
+
+产物约 5.7 MB，自包含，不依赖容器内 Dart 是否还在。
