@@ -165,9 +165,39 @@ HandlerResult _validate(Map<String, dynamic> envelope, Map<String, dynamic> payl
   List<Violation> violations;
   String source;
   if (rawProposal is Map) {
+    final blocks = _blockViewsFromJson(rawProposal['blocks']);
+
+    // 契约 §5.6：「每个 block 的 start_at 与 end_at 必须属于同一个上海本地日，不能跨午夜」。
+    // 违反属**结构错误**，按 §5.8 走 `PROPOSAL_INVALID`（422），不进 violations。
+    //
+    // 判定采用**半开区间**语义：允许 end_at **恰等于**次日 00:00:00
+    // （即 23:00–24:00 这种"排到当天结束"），只有真正越过零点才拒。
+    // 理由是可验证的：若把 end==次日00:00 也判非法，则「可用 23:00–24:00、任务 60 分钟」
+    // 会变成无法安排（最多只能放到 23:59），而这是完全正常的排程需求。
+    // 该口径已上报 M0 待确认，见接口文档 §十八。
+    final spanning = <String>[];
+    for (final block in blocks) {
+      final dayEnd = scheduleDayOnly(block.startAt).add(const Duration(days: 1));
+      if (block.endAt.isAfter(dayEnd)) {
+        spanning.add('${block.blockId}（${_isoInstant(block.startAt)} → ${_isoInstant(block.endAt)}）');
+      }
+    }
+    if (spanning.isNotEmpty) {
+      return HandlerResult(
+        422,
+        errorBody(
+          code: 'PROPOSAL_INVALID',
+          field: 'proposal.blocks',
+          message: '契约 §5.6 要求 block 的 start_at 与 end_at 属于同一上海本地日，'
+              '以下块跨过了零点：${spanning.join('、')}。'
+              '允许 end_at 恰为次日 00:00:00（当日排到结束），但不允许越过。',
+        ),
+      );
+    }
+
     violations = validateViews(
       mapped.input,
-      _blockViewsFromJson(rawProposal['blocks']),
+      blocks,
       _changeViewsFromJson(rawProposal['changes']),
     );
     source = 'caller-supplied';

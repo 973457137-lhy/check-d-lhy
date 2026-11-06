@@ -685,6 +685,97 @@ void main() async {
     '${tooLateUnplanned.map((u) => (u as Map)['reason_code']).toList()}',
   );
 
+  // 契约 §5.6：block 的 start_at 与 end_at 必须同属一个上海本地日。
+  // 结构错误按 §5.8 走 PROPOSAL_INVALID(422)，不进 violations。
+  // 边界采用半开语义：允许 end_at 恰为次日 00:00:00（当日排到结束），只拒真正越零点的。
+  Map<String, dynamic> midBody({required String endAt}) => {
+        'input': <String, dynamic>{
+          'now': '2026-11-02T20:00:00+08:00',
+          'horizon_start': '2026-11-02T00:00:00+08:00',
+          'horizon_end': '2026-11-03T06:00:00+08:00',
+          'base_version': 'v1',
+          'availability': <Map<String, String>>[
+            {'start_at': '2026-11-02T20:00:00+08:00', 'end_at': '2026-11-03T06:00:00+08:00'},
+          ],
+          'demands': <Map<String, Object>>[
+            {'task_id': 't', 'title': '任务', 'required_minutes': 120},
+          ],
+        },
+        'proposal': <String, dynamic>{
+          'blocks': <Map<String, String>>[
+            {
+              'task_id': 't',
+              'block_id': 'b1',
+              'task_kind': 'recurring',
+              'start_at': '2026-11-02T23:00:00+08:00',
+              'end_at': endAt,
+            },
+          ],
+        },
+      };
+  final spanningRes = handleRequest('POST', '/validate_schedule', midBody(endAt: '2026-11-03T01:00:00+08:00'));
+  _check(
+    '真跨午夜的块（23:00→次日01:00）必须 422 PROPOSAL_INVALID',
+    spanningRes.status == 422 &&
+        '${(spanningRes.body['error'] as Map?)?['code']}' == 'PROPOSAL_INVALID',
+    '${spanningRes.status} ${spanningRes.body['error']}',
+  );
+  _check(
+    '跨午夜错误的 retryable 必须是 bool false（结构错误重试无用）',
+    (spanningRes.body['error'] as Map?)?['retryable'] is bool &&
+        (spanningRes.body['error'] as Map)['retryable'] == false,
+    '${(spanningRes.body['error'] as Map?)?['retryable']}',
+  );
+  final dayEndRes = handleRequest('POST', '/validate_schedule', midBody(endAt: '2026-11-03T00:00:00+08:00'));
+  _check(
+    'end_at 恰为次日 00:00:00 必须放行（半开语义：当日排到结束，不是跨午夜）',
+    dayEndRes.status == 200 && dayEndRes.body['valid'] == true,
+    '${dayEndRes.status} ${dayEndRes.body['valid']} ${dayEndRes.body['violations']}',
+  );
+
+  // 生成器与校验器必须同口径：引擎自己排到 24:00 的块，回喂校验器不得被拒。
+  final genToMidnight = handleRequest('POST', '/generate_schedule', <String, dynamic>{
+    'input': <String, dynamic>{
+      'now': '2026-11-02T20:00:00+08:00',
+      'horizon_start': '2026-11-02T00:00:00+08:00',
+      'horizon_end': '2026-11-03T06:00:00+08:00',
+      'base_version': 'v1',
+      'availability': <Map<String, String>>[
+        {'start_at': '2026-11-02T23:00:00+08:00', 'end_at': '2026-11-03T00:00:00+08:00'},
+      ],
+      'demands': <Map<String, Object>>[
+        {'task_id': 't', 'title': '任务', 'required_minutes': 60},
+      ],
+    },
+  });
+  final midnightBlocks = ((genToMidnight.body['proposal'] as Map?)?['blocks'] as List?) ?? const [];
+  _check(
+    '引擎可把任务排到 23:00–24:00（60 分钟窗口放满，不被截成 59 分钟）',
+    midnightBlocks.length == 1 &&
+        '${(midnightBlocks.first as Map)['end_at']}' == '2026-11-03T00:00:00+08:00',
+    '${midnightBlocks.map((b) => (b as Map)['end_at']).toList()}',
+  );
+  final selfRoundTrip = handleRequest('POST', '/validate_schedule', <String, dynamic>{
+    'input': <String, dynamic>{
+      'now': '2026-11-02T20:00:00+08:00',
+      'horizon_start': '2026-11-02T00:00:00+08:00',
+      'horizon_end': '2026-11-03T06:00:00+08:00',
+      'base_version': 'v1',
+      'availability': <Map<String, String>>[
+        {'start_at': '2026-11-02T23:00:00+08:00', 'end_at': '2026-11-03T00:00:00+08:00'},
+      ],
+      'demands': <Map<String, Object>>[
+        {'task_id': 't', 'title': '任务', 'required_minutes': 60},
+      ],
+    },
+    'proposal': genToMidnight.body['proposal'],
+  });
+  _check(
+    '生成器排到 24:00 的提案回喂校验器必须 200 valid（口径不得自相矛盾）',
+    selfRoundTrip.status == 200 && selfRoundTrip.body['valid'] == true,
+    '${selfRoundTrip.status} ${selfRoundTrip.body['valid']} ${selfRoundTrip.body['error']}',
+  );
+
   stdout.writeln('== 3. 错误路径 ==');  final noOffset = _body(_fixture('normal.json'));
   (noOffset['input'] as Map<String, dynamic>)['now'] = '2026-11-02T08:00:00';
   final rejected = handleRequest('POST', '/generate_schedule', noOffset);
