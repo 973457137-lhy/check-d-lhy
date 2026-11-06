@@ -620,3 +620,53 @@ cd <workspace>
    传 `0` 的语义是「今天已经做完了」：我不会出块、也不会把它塞进未安排列表，只给一条 `ALREADY_DONE_TODAY` 解释。
 2. **估算不得写成任务固有属性**：`duration_source = scheduler_estimate` 的块，不要回写到 Task 的持久化时长字段
    （契约 §5.6 明文：任何估算都不得写回 Task 持久化字段）。只有 `task_target` 才代表任务自带目标。
+
+## 二十、容器部署的真正卡点是 pubspec，不是源码（2026-11-06 16:5x，M3 诊断 + 我方实测确认）
+
+### 现象分层
+
+M1 报「容器 Dart 2.17 编不过」时，其实卡了**两层**，我最初只解决了第一层：
+
+| 层 | 问题 | 状态 |
+|---|---|---|
+| 代码层 | Dart 3 语法（switch 表达式 / record / `library;`） | 已修（head `0c56f91`/`ce1df28`），真 2.17.6 编过 |
+| **包层** | 引擎包若沿用仓库根 `pubspec.yaml`（`sdk >=3.9.0` + flutter/drift/supabase/qr） | **Dart 2.17 在 pub 解析阶段就拒，根本轮不到编代码** |
+
+第一层修完为什么还是跑不起来：`dart run` 会向上找 package config，找不到就用上层 pubspec；
+容器里那一层要么缺失、要么就是仓库根那个高版本约束。
+
+### 修法：零依赖最小 pubspec
+
+`tools/m2-engine/deploy/pubspec.engine-pack.yaml`（复制为包根 `pubspec.yaml`）：
+
+```yaml
+name: check_d_engine_pack
+publish_to: none
+environment:
+  sdk: ">=2.17.0 <4.0.0"
+```
+
+无任何 `dependencies`——引擎只用 `dart:core/async/io/convert`。
+`dart pub get` 只生成 package config，不下载任何包。
+
+### 真 Dart 2.17.6 下四项实测
+
+| 步骤 | 结果 |
+|---|---|
+| `dart pub get` | **Got dependencies!** exit 0 |
+| `dart analyze .` | 0 error / 0 warning（2 条 info） |
+| `dart run tools/m2-engine/bin/smoke.dart` | **91 项 / 0 失败 / SMOKE OK** |
+| `dart run tools/m2-engine/bin/serve.dart` | 起服务，`/health` **200** |
+
+**副作用（正面）**：有了 pubspec，`dart run` 也正常了——M1 之前遇到的「dart run 找 package config 失败、
+只能改成直接执行」随之解决，不必再绕。
+
+### 关于 `// @dart=2.17` 首行标注：本轮不加
+
+M3 建议给 7 个 dart 文件首行加语言版本标注。不加的两个理由：
+
+1. 那行是给 **Dart 3 分析器**看的保护栏；**容器是 2.17，在那里是空操作**，对能不能跑毫无影响；
+2. 改 7 个文件会换 blob，而 M0 明确要求「交付后除非阻断缺陷不再改引擎坐标」。
+   实测已用真 2.17.6 验过，加标注不提高「能不能编」的确定性，只会多一轮坐标变更。
+
+若 M0/M3 认为必须加，我加并同步新坐标——但需要他们明确要求，我不自作主张动坐标。

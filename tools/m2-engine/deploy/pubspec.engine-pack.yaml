@@ -1,0 +1,16 @@
+# M2 引擎包专用最小 pubspec（零第三方依赖，Dart 2.17 可解析）
+#
+# 用途：放到引擎包**根目录**并重命名为 pubspec.yaml。
+# 为什么需要它：仓库根 pubspec.yaml 声明 sdk >=3.9.0 且依赖 flutter / drift_flutter /
+# supabase_flutter / qr_flutter；容器侧 Dart 2.17 在 pub 解析阶段就会被拒，根本轮不到编代码。
+# 引擎只用 dart:core / dart:async / dart:io / dart:convert，不需要任何依赖。
+#
+# 注意：**不要**把仓库根 pubspec 的依赖拷进来。drift / supabase / qr 与引擎无关，
+# 装上反而多一层不可控（容器里也无法用 flutter 解析）。
+name: check_d_engine_pack
+description: M2 scheduling engine service (Dart 2.17 compatible pack for container deployment)
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=2.17.0 <4.0.0"

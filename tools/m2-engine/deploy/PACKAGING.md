@@ -2,7 +2,16 @@
 
 > 依据 M1 2026-11-05 17:24:14Z 的 `/diag` 实测：容器内 `dart`/`flutter` 已装、可 spawn 第二进程、
 > 可 bind 127.0.0.1、`/workspace` 可写、`pub.dev` 通。
-> 结论：**不需要 Docker，也不需要 `pub get`**——引擎已改为相对导入，纯 `dart run` 即可。
+> 结论：**不需要 Docker**，用一个**零依赖最小 pubspec** 即可（见 `pubspec.engine-pack.yaml`）。
+>
+> **2026-11-06 更正（重要）**：本文早先写「不需要 pubspec、不跑 pub get」，那是**在仓库内**直接
+> `dart file.dart` 成立；一旦引擎包独立放到别的目录，容器里的 `dart run` 会向上找不到 package config，
+> 或误用仓库根 pubspec（`sdk >=3.9.0` + flutter/drift/supabase/qr），在 **pub 解析阶段**就被 Dart 2.17 拒掉
+> ——根本轮不到编代码。M1 实际就卡在这一层。
+>
+> 正确做法：把 `pubspec.engine-pack.yaml` 复制为包根的 `pubspec.yaml`，跑一次 `dart pub get`
+> （无任何第三方依赖），然后 `dart run` 正常工作。真 Dart 2.17.6 下实测：可 pub get、可 analyze、
+> smoke 91/91、可 `dart run` 起服务且 `/health` 200。
 
 ## 一、要拷哪些文件（保持相对布局）
 
@@ -32,7 +41,7 @@ cd <workspace>
 #   M2_ENGINE_PORT=8787  M2_ENGINE_HOST=127.0.0.1
 ```
 
-- **没有第三方依赖**，不跑 `pub get`；
+- **没有第三方依赖**；但独立成包时需要一个零依赖的 `pubspec.yaml`（`dart pub get` 只生成 package config，不拉任何包）；
 - 冷启动首次编译约 **10–20 秒**（本机实测），建议启动后轮询 `/health` 再放流量；
 - 监听回环即可，公网只暴露你的 `tool_server`。
 
@@ -97,7 +106,7 @@ def start_engine(workspace="/workspace"):
 
 ## 七、这个包已经按「干净拷贝」实测过（2026-11-06 01:55 +08）
 
-不是「应该能跑」，是真跑过：把上面 10 个文件（共 **136 KB**）拷到一个**没有 pubspec、
+不是「应该能跑」，是真跑过：把上面 10 个文件（共 **136 KB**）拷到一个**没有仓库根 pubspec、
 没有 .dart_tool、没有 git** 的空目录 `/e/m2-pack`，然后：
 
 ```bash
