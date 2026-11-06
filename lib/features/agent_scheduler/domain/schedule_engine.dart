@@ -1,16 +1,15 @@
-/// M2 智能调度引擎：确定性、可解释、零数据库访问。
-///
-/// 两个入口：
-/// - [generateSchedule]：从零排出一版提案。
-/// - [repairSchedule]：硬约束发生变化后做最小扰动重排。
-///
-/// 实现纪律：
-/// - 不 import 任何 repository、drift 或 UI 文件，因此可以被单独测试。
-/// - 不调用 `DateTime.now()`，时间基准全部来自 [ScheduleInput.now]，
-///   否则「相同输入相同输出」这条验收就无法成立。
-/// - 绝不移动 [ScheduleFixedBlock]。硬约束冲突只会被记录和避开。
-/// - 只产出提案，不产生任何写入动作。
-library;
+// M2 智能调度引擎：确定性、可解释、零数据库访问。
+//
+// 两个入口：
+// - [generateSchedule]：从零排出一版提案。
+// - [repairSchedule]：硬约束发生变化后做最小扰动重排。
+//
+// 实现纪律：
+// - 不 import 任何 repository、drift 或 UI 文件，因此可以被单独测试。
+// - 不调用 `DateTime.now()`，时间基准全部来自 [ScheduleInput.now]，
+//   否则「相同输入相同输出」这条验收就无法成立。
+// - 绝不移动 [ScheduleFixedBlock]。硬约束冲突只会被记录和避开。
+// - 只产出提案，不产生任何写入动作。
 
 import 'schedule_contract.dart';
 
@@ -239,35 +238,46 @@ String _dayTag(DateTime instant) {
 ///   ——「未安排不等于完成」，而这里恰恰是完成；
 /// - 为空：按完整 `duration_target_seconds` 排。
 ///
+/// 时长解析结果。
+///
+/// 原先用 record `({int minutes, bool fromTarget})`，但容器侧 Dart 2.17 不支持 records；
+/// 改成普通小类后，2.17 与 3.x 都能编，且字段名不变、调用点无需调整语义。
+class _DurationInfo {
+  const _DurationInfo({required this.minutes, required this.fromTarget});
+
+  final int minutes;
+  final bool fromTarget;
+}
+
 /// `fromTarget` 决定 `duration_source` 是 `task_target` 还是 `scheduler_estimate`；
 /// 只有任务目标算 `task_target`，快照估算与兜底一律算 `scheduler_estimate`，
 /// 不得伪装成任务固有属性。
-({int minutes, bool fromTarget}) _durationOf(
+_DurationInfo _durationOf(
   ScheduleTaskDemand demand,
   ScheduleInput input,
 ) {
   final remainingToday = demand.remainingMinutesToday;
   if (demand.taskKind == ScheduleTaskKind.recurring && remainingToday != null) {
     // = 0 是「当天已做完」，不是「没有时长依据」：不能落到第三级兜底。
-    if (remainingToday <= 0) return (minutes: 0, fromTarget: true);
-    return (minutes: remainingToday, fromTarget: true);
+    if (remainingToday <= 0) return const _DurationInfo(minutes: 0, fromTarget: true);
+    return _DurationInfo(minutes: remainingToday, fromTarget: true);
   }
 
   final target = demand.targetDurationSeconds;
   if (target != null && target > 0) {
-    return (
+    return _DurationInfo(
       minutes: (target / Duration.secondsPerMinute).ceil(),
       fromTarget: true,
     );
   }
 
   if (demand.requiredMinutes > 0) {
-    return (minutes: demand.requiredMinutes, fromTarget: false);
+    return _DurationInfo(minutes: demand.requiredMinutes, fromTarget: false);
   }
 
   // 兜底：既没有任务目标，也没有快照估算。
   final minimum = input.preferences.minimumBlockMinutes;
-  return (minutes: minimum > 30 ? minimum : 30, fromTarget: false);
+  return _DurationInfo(minutes: minimum > 30 ? minimum : 30, fromTarget: false);
 }
 
 /// 在空闲片段中为一条需求找位置：最早可行优先，不拆分。

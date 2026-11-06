@@ -1,8 +1,7 @@
-/// 纯函数式请求处理层：只吃 `(method, path, body)`，不碰 socket。
-///
-/// 这样 HTTP 层（`bin/serve.dart`）与自检脚本（`bin/smoke.dart`）走**同一套**逻辑，
-/// 不会出现「curl 通了但脚本走另一条分支」的假通过。
-library;
+// 纯函数式请求处理层：只吃 `(method, path, body)`，不碰 socket。
+//
+// 这样 HTTP 层（`bin/serve.dart`）与自检脚本（`bin/smoke.dart`）走**同一套**逻辑，
+// 不会出现「curl 通了但脚本走另一条分支」的假通过。
 
 import 'dart:convert';
 import '../../../lib/features/agent_scheduler/domain/schedule_contract.dart';
@@ -86,12 +85,16 @@ HandlerResult handleRequest(String method, String path, Object? body) {
   }
 
   try {
-    return switch (route) {
-      '/generate_schedule' => _generate(payload),
-      '/validate_schedule' => _validate(envelope, payload),
-      '/repair_schedule' => _repair(envelope, payload),
-      _ => HandlerResult(404, _error('NOT_FOUND', 'path', '未知路径：$route')),
-    };
+    switch (route) {
+      case '/generate_schedule':
+        return _generate(payload);
+      case '/validate_schedule':
+        return _validate(envelope, payload);
+      case '/repair_schedule':
+        return _repair(envelope, payload);
+      default:
+        return HandlerResult(404, _error('NOT_FOUND', 'path', '未知路径：$route'));
+    }
   } on ContractFormatException catch (error) {
     return HandlerResult(400, _error('INVALID_ARGUMENT', error.field, error.message));
   }

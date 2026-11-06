@@ -1,20 +1,19 @@
-/// M2 智能调度在确定提案阶段使用的数据结构。
-///
-/// 这里是纯粹的提案形状（DTO），不是数据库表，也不对应任何 Drift 实体。
-/// M0 负责把真实的 Task / Course / Calendar / 单日例外映射成这里的结构，
-/// 本模块只负责计算。
-///
-/// 团队 Global Constraints 在本模块中的落点：
-/// - Course 与会议属于硬约束，[ScheduleFixedBlock] 永远不可被移动。
-/// - 日期型截止与精确截止分别建模（[ScheduleDeadline]），
-///   绝不为「只有日期」的截止伪造一个 23:59 的时刻。
-/// - [ProposedBlock] 只表示未来安排的建议，永远不是 TimerSession 事实，
-///   也不代表手动完成。
-/// - 引擎不得读取当前时间，所有时间基准来自 [ScheduleInput.now]，
-///   这保证相同输入必然得到相同输出。
-library;
+// M2 智能调度在确定提案阶段使用的数据结构。
+//
+// 这里是纯粹的提案形状（DTO），不是数据库表，也不对应任何 Drift 实体。
+// M0 负责把真实的 Task / Course / Calendar / 单日例外映射成这里的结构，
+// 本模块只负责计算。
+//
+// 团队 Global Constraints 在本模块中的落点：
+// - Course 与会议属于硬约束，[ScheduleFixedBlock] 永远不可被移动。
+// - 日期型截止与精确截止分别建模（[ScheduleDeadline]），
+//   绝不为「只有日期」的截止伪造一个 23:59 的时刻。
+// - [ProposedBlock] 只表示未来安排的建议，永远不是 TimerSession 事实，
+//   也不代表手动完成。
+// - 引擎不得读取当前时间，所有时间基准来自 [ScheduleInput.now]，
+//   这保证相同输入必然得到相同输出。
 
-/// 硬约束的来源类型。
+// 硬约束的来源类型。
 enum ScheduleOwnerType {
   /// 课程。课程只是日程状态，不参与打卡，也不进入专注时长。
   course,
@@ -25,10 +24,21 @@ enum ScheduleOwnerType {
 
 /// [ScheduleOwnerType] 的契约编码。
 extension ScheduleOwnerTypeCode on ScheduleOwnerType {
-  String get code => switch (this) {
-    ScheduleOwnerType.course => 'course',
-    ScheduleOwnerType.event => 'external_fixed_event',
-  };
+  // 用 switch 语句而不是 switch 表达式：容器侧 Dart 2.17 不支持表达式写法，
+  // 而 2.17 兼容语法在 Dart 3 下同样合法——一套源码两边都能编，避免两套语言版本并行。
+  String get code {
+    switch (this) {
+      case ScheduleOwnerType.course:
+        return 'course';
+      case ScheduleOwnerType.event:
+        return 'external_fixed_event';
+      // Dart 3 能推出枚举已穷尽，会报 unreachable_switch_default；
+      // 容器侧 Dart 2.17 没有这层推导，这个 default 是必要的运行时护栏。
+      // ignore: unreachable_switch_default
+      default:
+        throw StateError('未覆盖的 ScheduleOwnerType：$this');
+    }
+  }
 }
 
 /// 任务类型，取值与契约 `task_kind` 一致。
@@ -42,10 +52,19 @@ enum ScheduleTaskKind {
 
 /// [ScheduleTaskKind] 的契约编码。
 extension ScheduleTaskKindCode on ScheduleTaskKind {
-  String get code => switch (this) {
-    ScheduleTaskKind.recurring => 'recurring',
-    ScheduleTaskKind.oneTime => 'one_time',
-  };
+  String get code {
+    switch (this) {
+      case ScheduleTaskKind.recurring:
+        return 'recurring';
+      case ScheduleTaskKind.oneTime:
+        return 'one_time';
+      // Dart 3 能推出枚举已穷尽，会报 unreachable_switch_default；
+      // 容器侧 Dart 2.17 没有这层推导，这个 default 是必要的运行时护栏。
+      // ignore: unreachable_switch_default
+      default:
+        throw StateError('未覆盖的 ScheduleTaskKind：$this');
+    }
+  }
 }
 
 /// 提案状态机，取值与契约 `schedule_proposal.status` 一致。
@@ -65,16 +84,31 @@ enum ScheduleProposalStatus {
 }
 
 extension ScheduleProposalStatusCode on ScheduleProposalStatus {
-  String get code => switch (this) {
-    ScheduleProposalStatus.draft => 'draft',
-    ScheduleProposalStatus.pendingApproval => 'pending_approval',
-    ScheduleProposalStatus.applying => 'applying',
-    ScheduleProposalStatus.readbackPending => 'readback_pending',
-    ScheduleProposalStatus.applied => 'applied',
-    ScheduleProposalStatus.rejected => 'rejected',
-    ScheduleProposalStatus.expired => 'expired',
-    ScheduleProposalStatus.failed => 'failed',
-  };
+  String get code {
+    switch (this) {
+      case ScheduleProposalStatus.draft:
+        return 'draft';
+      case ScheduleProposalStatus.pendingApproval:
+        return 'pending_approval';
+      case ScheduleProposalStatus.applying:
+        return 'applying';
+      case ScheduleProposalStatus.readbackPending:
+        return 'readback_pending';
+      case ScheduleProposalStatus.applied:
+        return 'applied';
+      case ScheduleProposalStatus.rejected:
+        return 'rejected';
+      case ScheduleProposalStatus.expired:
+        return 'expired';
+      case ScheduleProposalStatus.failed:
+        return 'failed';
+      // Dart 3 能推出枚举已穷尽，会报 unreachable_switch_default；
+      // 容器侧 Dart 2.17 没有这层推导，这个 default 是必要的运行时护栏。
+      // ignore: unreachable_switch_default
+      default:
+        throw StateError('未覆盖的 ScheduleProposalStatus：$this');
+    }
+  }
 }
 
 /// 调度偏好。对应契约 `generate_schedule.input.preferences`。
@@ -173,14 +207,27 @@ enum UnplannedReason {
 
 /// [UnplannedReason] 的 JSON 编码，供 M0 v1 契约使用。
 extension UnplannedReasonCode on UnplannedReason {
-  String get code => switch (this) {
-    UnplannedReason.windowInsufficient => 'WINDOW_INSUFFICIENT',
-    UnplannedReason.pastDeadline => 'PAST_DEADLINE',
-    UnplannedReason.overlapsFixed => 'OVERLAPS_FIXED',
-    UnplannedReason.noAvailability => 'NO_AVAILABILITY',
-    UnplannedReason.unschedulableOverdue => 'UNSCHEDULABLE_OVERDUE',
-    UnplannedReason.insufficientTimeBeforeDeadline => 'INSUFFICIENT_TIME_BEFORE_DEADLINE',
-  };
+  String get code {
+    switch (this) {
+      case UnplannedReason.windowInsufficient:
+        return 'WINDOW_INSUFFICIENT';
+      case UnplannedReason.pastDeadline:
+        return 'PAST_DEADLINE';
+      case UnplannedReason.overlapsFixed:
+        return 'OVERLAPS_FIXED';
+      case UnplannedReason.noAvailability:
+        return 'NO_AVAILABILITY';
+      case UnplannedReason.unschedulableOverdue:
+        return 'UNSCHEDULABLE_OVERDUE';
+      case UnplannedReason.insufficientTimeBeforeDeadline:
+        return 'INSUFFICIENT_TIME_BEFORE_DEADLINE';
+      // Dart 3 能推出枚举已穷尽，会报 unreachable_switch_default；
+      // 容器侧 Dart 2.17 没有这层推导，这个 default 是必要的运行时护栏。
+      // ignore: unreachable_switch_default
+      default:
+        throw StateError('未覆盖的 UnplannedReason：$this');
+    }
+  }
 }
 
 DateTime scheduleDayOnly(DateTime value) =>

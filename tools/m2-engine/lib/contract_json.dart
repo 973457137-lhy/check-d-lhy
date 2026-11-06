@@ -1,11 +1,10 @@
-/// 把 M1/服务端送来的契约 JSON 映射成 M2 调度引擎的输入 DTO。
-///
-/// 三条硬原则，都是被契约与历史事故逼出来的：
-/// 1. **时间必须带偏移**：契约 §3 禁止无偏移时间，这里直接拒绝，不做「猜时区」。
-/// 2. **不猜、不补默认**：缺字段就报错并指出字段名；唯一例外是 `required_minutes`
-///    允许缺省为 0（引擎会落到「最短块」兜底），但会在响应的 `warnings` 里明写。
-/// 3. **只做映射**：这里不实现任何排程语义，语义全部在 domain 引擎里。
-library;
+// 把 M1/服务端送来的契约 JSON 映射成 M2 调度引擎的输入 DTO。
+//
+// 三条硬原则，都是被契约与历史事故逼出来的：
+// 1. **时间必须带偏移**：契约 §3 禁止无偏移时间，这里直接拒绝，不做「猜时区」。
+// 2. **不猜、不补默认**：缺字段就报错并指出字段名；唯一例外是 `required_minutes`
+//    允许缺省为 0（引擎会落到「最短块」兜底），但会在响应的 `warnings` 里明写。
+// 3. **只做映射**：这里不实现任何排程语义，语义全部在 domain 引擎里。
 
 import '../../../lib/features/agent_scheduler/domain/schedule_contract.dart';
 
@@ -145,20 +144,27 @@ ScheduleDeadline? _deadline(Object? raw, String field) {
 
 ScheduleTaskKind _taskKind(Object? raw, String field) {
   final code = _string(raw, field);
-  return switch (code) {
-    'recurring' => ScheduleTaskKind.recurring,
-    'one_time' => ScheduleTaskKind.oneTime,
-    _ => _fail(field, "只接受 'recurring' 或 'one_time'"),
-  };
+  // switch 语句而非表达式：容器侧 Dart 2.17 不支持表达式写法（见 contract 同名注释）。
+  switch (code) {
+    case 'recurring':
+      return ScheduleTaskKind.recurring;
+    case 'one_time':
+      return ScheduleTaskKind.oneTime;
+    default:
+      return _fail(field, "只接受 'recurring' 或 'one_time'");
+  }
 }
 
 ScheduleOwnerType _ownerType(Object? raw, String field) {
   final code = _string(raw, field);
-  return switch (code) {
-    'course' => ScheduleOwnerType.course,
-    'external_fixed_event' => ScheduleOwnerType.event,
-    _ => _fail(field, "只接受 'course' 或 'external_fixed_event'"),
-  };
+  switch (code) {
+    case 'course':
+      return ScheduleOwnerType.course;
+    case 'external_fixed_event':
+      return ScheduleOwnerType.event;
+    default:
+      return _fail(field, "只接受 'course' 或 'external_fixed_event'");
+  }
 }
 
 /// 映射结果：输入 DTO + 需要告知调用方的非致命提示。

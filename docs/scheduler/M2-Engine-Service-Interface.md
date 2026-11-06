@@ -439,3 +439,46 @@ max_shift_minutes=10 未能满足：t-a（位移 420 分钟 > 上限 10）。该
 - 若只是「尽量别挪太远」→ 可以落库，但建议把 warning 透给用户看。
 
 不要因为它返回 200 就认为约束满足了——200 只说明「排出来了」，不说明「按你的边界排的」。
+
+## 十七、Dart 版本兼容：源码已降到 2.17 可编译（2026-11-06 12:5x）
+
+M1 实测容器内 Dart SDK = **2.17.0**（linux_x64），我的 Dart 3 语法编不过，卡住「引擎同容器托管」。
+他给了三条绕法（AOT 二进制 / 每次冷启动下载 SDK / 我改源码），倾向第 1 条。
+
+**我的选择是第三条**，理由：
+
+- `dart compile exe` **不能跨平台编译**：我在 Windows 只能产出 Windows 可执行文件，容器是 linux_x64；
+- 二进制入库会带来「源码改了忘重编」的静默背离——这正是本项目反复踩过的「两份副本」类问题；
+- 实际代价很小：全仓 Dart 3 专属语法只有 **13 处**，改完两边都能编，**一套源码**，M1 什么都不用做。
+
+| 项 | 位置 | 处理 |
+|---|---|---|
+| `switch` 表达式 ×7 | contract 4（枚举→码表）、contract_json 2、handler 1 | 改为 `switch` 语句 + `return`，语义逐字对应 |
+| record 类型 ×1 | engine `_durationOf` 的返回 `({int minutes, bool fromTarget})` | 改为私有小类 `_DurationInfo`，字段名不变 |
+| `library;` 指令 ×5 | 两个域文件 + 三个适配层文件 | 删除（该指令 2.19 才有）；文件头 `///` 改 `//`，避免悬空文档注释 |
+
+### 怎么验证「真的能在 2.17 下编」（无需装旧 SDK）
+
+Dart 支持按文件标注语言版本。把文件复制出来、首行加 `// @dart=2.17`，再用当前 SDK 分析：
+
+```
+mkdir -p .compat-probe/domain
+{ echo '// @dart=2.17'; cat lib/.../schedule_contract.dart; } > .compat-probe/domain/schedule_contract.dart
+dart analyze .compat-probe/domain      # 预期：No issues（或仅剩已知误报）
+```
+
+这一步抓到了我肉眼扫漏的两处：**record 类型**与 **`library;`**。只看 `switch` 是不够的。
+
+### 语义未变的证据
+
+- 宿主 `flutter test`：**69/69，exit 0**
+- 隔离 `dart test`（Dart 3.13.7）：**69/69，exit 0**
+- 适配层 `smoke`：**77 项 / 0 失败 / exit 0**
+
+改动是**纯语法降级**：没有任何断言被改、没有被跳过的用例。
+
+### 给 M1 的结论
+
+**三条绕法都不用做。** 直接跑现有源码即可（你已改成直接执行而非 `dart run`，这是对的：
+`dart run` 会去找 package config 而失败）。若你仍想要 AOT 二进制，
+请在容器里用 Dart 3 编一次（我这边编不出 linux 产物），并把二进制的 sha256 回传给我登记。
