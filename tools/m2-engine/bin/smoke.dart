@@ -852,6 +852,79 @@ void main() async {
     '${twoRecurring.status} ${twoRecurring.body['valid']} ${twoRecurring.body['error']}',
   );
 
+  // 契约 §5.6 的时长来源优先级（原文顺序固定）：
+  //   duration_target_seconds（周期任务优先用 remaining_minutes_today；为 null 用完整目标，
+  //   为 0 则不生成 block）→ 服务端估算 → max(preferences.minimum_block_minutes, 30)
+  // 且 duration_seconds 必须等于 end_at − start_at、为正整数。
+  Map<String, dynamic> durBody(Map<String, Object?> demand, {int? minBlock}) => {
+        'input': <String, dynamic>{
+          'now': '2026-11-02T08:00:00+08:00',
+          'horizon_start': '2026-11-02T00:00:00+08:00',
+          'horizon_end': '2026-11-02T22:00:00+08:00',
+          'base_version': 'v1',
+          'availability': <Map<String, String>>[
+            {'start_at': '2026-11-02T08:00:00+08:00', 'end_at': '2026-11-02T18:00:00+08:00'},
+          ],
+          if (minBlock != null)
+            'preferences': <String, Object>{'minimum_block_minutes': minBlock},
+          'demands': <Map<String, Object?>>[
+            {'task_id': 't', 'title': 'T', ...demand},
+          ],
+        },
+      };
+  Map<String, dynamic>? firstBlockOf(Map<String, dynamic> body) {
+    final r = handleRequest('POST', '/generate_schedule', body);
+    final blocks = ((r.body['proposal'] as Map?)?['blocks'] as List?) ?? const [];
+    return blocks.isEmpty ? null : (blocks.first as Map).cast<String, dynamic>();
+  }
+
+  final zeroRemaining = handleRequest('POST', '/generate_schedule', durBody(
+    {'task_kind': 'recurring', 'remaining_minutes_today': 0, 'target_duration_seconds': 3600},
+  ));
+  _check(
+    'remaining_minutes_today=0 → 不生成 block，也不进 unplanned（是"已做完"，不是"排不下"）',
+    ((zeroRemaining.body['proposal'] as Map)['blocks'] as List).isEmpty &&
+        ((zeroRemaining.body['proposal'] as Map)['unplanned_tasks'] as List).isEmpty,
+    'blocks=${((zeroRemaining.body['proposal'] as Map)['blocks'] as List).length}',
+  );
+  final partial = firstBlockOf(durBody(
+    {'task_kind': 'recurring', 'remaining_minutes_today': 45, 'target_duration_seconds': 3600},
+  ));
+  _check(
+    'remaining=45 < target 60 → 按 45 分钟排，且 duration_source=task_target',
+    partial != null && partial['duration_seconds'] == 2700 && partial['duration_source'] == 'task_target',
+    '${partial?['duration_seconds']} / ${partial?['duration_source']}',
+  );
+  final onlyTarget = firstBlockOf(durBody({'task_kind': 'recurring', 'target_duration_seconds': 3600}));
+  _check(
+    '仅给 target=3600s → 60 分钟，duration_source=task_target',
+    onlyTarget != null && onlyTarget['duration_seconds'] == 3600 && onlyTarget['duration_source'] == 'task_target',
+    '${onlyTarget?['duration_seconds']} / ${onlyTarget?['duration_source']}',
+  );
+  final fallback45 = firstBlockOf(durBody({'task_kind': 'recurring'}, minBlock: 45));
+  _check(
+    '无任何时长依据 + minimum=45 → 45 分钟，duration_source=scheduler_estimate（不得冒充任务固有）',
+    fallback45 != null &&
+        fallback45['duration_seconds'] == 2700 &&
+        fallback45['duration_source'] == 'scheduler_estimate',
+    '${fallback45?['duration_seconds']} / ${fallback45?['duration_source']}',
+  );
+  final fallback30 = firstBlockOf(durBody({'task_kind': 'recurring'}, minBlock: 10));
+  _check(
+    '无任何时长依据 + minimum=10 → max(10,30)=30 分钟（下限 30 不得被 minimum 拉低）',
+    fallback30 != null && fallback30['duration_seconds'] == 1800,
+    '${fallback30?['duration_seconds']}',
+  );
+  _check(
+    'duration_seconds 恒等于 end_at − start_at（上例 45 分钟=2700 秒已在多处核对，此处再验一处）',
+    fallback30 != null &&
+        DateTime.parse('${fallback30['end_at']}')
+                .difference(DateTime.parse('${fallback30['start_at']}'))
+                .inSeconds ==
+            fallback30['duration_seconds'],
+    '${fallback30?['duration_seconds']}',
+  );
+
   stdout.writeln('== 3. 错误路径 ==');  final noOffset = _body(_fixture('normal.json'));
   (noOffset['input'] as Map<String, dynamic>)['now'] = '2026-11-02T08:00:00';
   final rejected = handleRequest('POST', '/generate_schedule', noOffset);

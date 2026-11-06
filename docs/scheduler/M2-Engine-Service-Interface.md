@@ -599,3 +599,24 @@ cd <workspace>
 | 同一 `one_time` 两块 | **422 `PROPOSAL_INVALID`**，消息点名任务与全部块 id |
 | 同一 `one_time` 一块 | 200 `valid=true`（对照） |
 | 同一 `recurring` 跨两日各一块 | 200 `valid=true`（对照：新守卫不得误杀合法跨日） |
+
+## 十九、时长来源优先级：逐条实测与契约一致（2026-11-06 14:4x，未发现缺陷）
+
+§5.6 对时长来源的规定是**有序且固定**的，我一向凭印象实现、从未逐条对过。本轮补上，结论是——**已实现且与契约一致**。
+这不是白查：它把下面这张表变成了可回归的断言，以后谁改动 `_durationOf` 都会立刻红。
+
+| 输入 | 契约要求 | 实测 |
+|---|---|---|
+| 周期任务 `remaining_minutes_today = 0` | **不生成 block**（"已做完"不是"排不下"） | 无块、也不进 `unplanned_tasks` ✅ |
+| 周期任务 `remaining = 45`、`target = 3600s` | 按 45 分钟排，`task_target` | `08:00–08:45`、2700 秒、`task_target` ✅ |
+| 仅 `target = 3600s` | 60 分钟，`task_target` | `08:00–09:00`、3600 秒、`task_target` ✅ |
+| 无任何时长依据、`minimum_block_minutes = 45` | 45 分钟，`scheduler_estimate` | 2700 秒、`scheduler_estimate` ✅ |
+| 无任何时长依据、`minimum_block_minutes = 10` | `max(10, 30) = 30` 分钟（**下限 30 不能被杀低**） | 1800 秒 ✅ |
+| 任意情形 | `duration_seconds` = `end_at − start_at`，正整数 | 逐例实算一致 ✅ |
+
+### 给你（M1）的两个使用要点
+
+1. **`remaining_minutes_today` 只对周期任务生效**，且必须由你从可信快照给出——它优先于 `duration_target_seconds`。
+   传 `0` 的语义是「今天已经做完了」：我不会出块、也不会把它塞进未安排列表，只给一条 `ALREADY_DONE_TODAY` 解释。
+2. **估算不得写成任务固有属性**：`duration_source = scheduler_estimate` 的块，不要回写到 Task 的持久化时长字段
+   （契约 §5.6 明文：任何估算都不得写回 Task 持久化字段）。只有 `task_target` 才代表任务自带目标。
